@@ -15,6 +15,8 @@ When a caller calls VirtualAllocSecure, VirtualAlloc is first called to reserve+
 
 **NOTE:** This is extremely hacky and could lead to system instability!
 
+*Tested on my Ryzen 2700X with virtualization fucntionality disabled in the BIOS*
+
 ## Library usage
 
 VirtualAllocSecure.dll can be dynamically loaded by any process. To allocated a virtual memory region 
