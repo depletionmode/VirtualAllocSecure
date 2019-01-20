@@ -15,7 +15,7 @@ VirtualAllocSecure (
 
 BOOLEAN _testSystemSmeCapable();
 
-// todo:includes
+#define DEVICE_NAME "\\\\.\\Sme"
 
 PVOID
 VirtualAllocSecure (
@@ -60,7 +60,7 @@ VirtualAllocSecure (
     //
 
     *(ULONG*)address = 0xf00d3333;
-
+    
     //
     // Call driver to set C-bit on each page in the allocated region.
     //
@@ -95,7 +95,7 @@ VirtualAllocSecure (
     // Test magic value. If encryption is now enabled, it should not match the 
     // value previously written (as this value is now 'decrypted').
     //
-
+    
     if (*(ULONG*)address == 0xf00d3333) {
         SetLastError(ERROR_ENCRYPTION_FAILED);
 
@@ -113,11 +113,12 @@ end:
 
     if (releaseNeeded) {
         VirtualFree(address, 0, MEM_RELEASE);
+        address = NULL;
     }
 
     return address;
 }
-
+#include <stdio.h>
 BOOLEAN _testSystemSmeCapable()
 {
     HANDLE hDevice;
@@ -130,12 +131,12 @@ BOOLEAN _testSystemSmeCapable()
         // from driver.
         //
 
-        hDevice = CreateFile((LPCSTR)DEVICE_NAME,
-                             GENERIC_WRITE, 
+        hDevice = CreateFileA(DEVICE_NAME,
+                             GENERIC_READ | GENERIC_WRITE, 
                              0, 
                              NULL, 
-                             OPEN_EXISTING, 
-                             0, 
+                             CREATE_ALWAYS, 
+                             FILE_ATTRIBUTE_NORMAL, 
                              NULL);
         if (INVALID_HANDLE_VALUE == hDevice) {
             return FALSE;

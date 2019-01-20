@@ -33,7 +33,7 @@ int main(int ac, char *av[])
     printf("[-] Attempting to allocate encrypted memory...\n");
     PCHAR buffer = pVirtualAllocSecure(BUFFER_SIZE, PAGE_READWRITE);
     if (buffer == NULL) {
-        printf("[!] ...buffer allocation failed!\n");
+        printf("[!] ...buffer allocation failed (error=0x%x!)\n", GetLastError());
 
         return -1;
     }

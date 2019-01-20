@@ -6,8 +6,8 @@
 
 #include "SecureMemoryEncryptionDriver.h"
 
-static const UNICODE_STRING SmepDeviceName = RTL_CONSTANT_STRING(DEVICE_NAME);
-static const UNICODE_STRING SmepWin32DeviceName = RTL_CONSTANT_STRING(DEVICE_NAME);
+static const UNICODE_STRING SmepDeviceName = RTL_CONSTANT_STRING(L"\\Device\\Sme");
+static const UNICODE_STRING SmepWin32DeviceName = RTL_CONSTANT_STRING(L"\\??\\Sme");
 
 DRIVER_INITIALIZE DriverEntry;
 DRIVER_UNLOAD SmeDriverUnload;
@@ -29,7 +29,7 @@ SmeDispatchCreate (
     _In_ PIRP Irp
     );
 
-NTSTATUS
+BOOLEAN
 SmeDispatchFastIoDeviceControl (
     _In_ struct _FILE_OBJECT *FileObject,
     _In_ BOOLEAN Wait,
@@ -77,17 +77,18 @@ DriverEntry (
 {
     NTSTATUS status;
 
+    UNREFERENCED_PARAMETER(DriverObject);
     UNREFERENCED_PARAMETER(RegistryPath);
 
     PAGED_CODE();
 
     SmeContext.FastIoDispatchTbl.SizeOfFastIoDispatch = sizeof(FAST_IO_DISPATCH);
     SmeContext.FastIoDispatchTbl.FastIoDeviceControl = (PFAST_IO_DEVICE_CONTROL)SmeDispatchFastIoDeviceControl;
-
+    
     DriverObject->DriverUnload = SmeDriverUnload;
     DriverObject->FastIoDispatch = &SmeContext.FastIoDispatchTbl;
     DriverObject->MajorFunction[IRP_MJ_CREATE] = SmeDispatchCreate;
-
+    
     status = IoCreateDevice(DriverObject,
                             0,
                             (PUNICODE_STRING)&SmepDeviceName,
@@ -144,7 +145,7 @@ SmeDispatchCreate (
     return status;
 }
 
-NTSTATUS
+BOOLEAN
 SmeDispatchFastIoDeviceControl (
     _In_ struct _FILE_OBJECT *FileObject,
     _In_ BOOLEAN Wait,
@@ -218,7 +219,7 @@ end:
     IoStatus->Information = responseLength;
     IoStatus->Status = status;
 
-    return status;
+    return status == STATUS_SUCCESS;
 }
 
 NTSTATUS

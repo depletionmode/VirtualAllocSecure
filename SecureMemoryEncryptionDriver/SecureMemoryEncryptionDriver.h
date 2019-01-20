@@ -4,24 +4,13 @@
 
 #pragma once
 
-#define DEVICE_NAME L"\\Device\\VirtualAllocSecure"
-
 #define SME_IOCTL_GET_CAPABILITIES CTL_CODE(FILE_DEVICE_UNKNOWN, 0xa80, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
-#pragma warning (disable:4201)
 typedef struct _SME_GET_CAPABILITIES_RESPONSE {
-    union {
-        int Flags;
-
-        struct {
-            int Supported : 1;
-            int PageTableCbitIdx : 1;
-            int PhysicalAddressSpaceReduction : 1;
-            int MemoryEncryptionModeEnabled : 1;
-
-        };
-
-    };
+    BOOLEAN Supported;
+    ULONG PageTableCbitIdx;
+    ULONG PhysicalAddressSpaceReduction;
+    BOOLEAN MemoryEncryptionModeEnabled;
 
 } SME_GET_CAPABILITIES_RESPONSE, *PSME_GET_CAPABILITIES_RESPONSE;
 
