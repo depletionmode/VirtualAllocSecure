@@ -50,7 +50,20 @@ SmepGetCapabilities (
 NTSTATUS
 SmepSetCbit (
     _In_ PSME_SET_CBIT_REQUEST SetCbitRequest
- );
+    );
+
+FORCEINLINE
+VOID
+_readPhysicalMemory(
+    _In_ PVOID Address,
+    _In_ SIZE_T Size,
+    _Out_writes_bytes_(Size) PVOID BufferNonPaged
+    );
+
+PVOID
+MmGetVirtualForPhysical(
+    _In_ PHYSICAL_ADDRESS Address
+);
 
 #pragma alloc_text(INIT, DriverEntry)
 #pragma alloc_text(PAGE, SmeDriverUnload)
@@ -59,15 +72,16 @@ SmepSetCbit (
 #pragma alloc_text(PAGE, SmepGetCapabilities)
 #pragma alloc_text(PAGE, SmepSetCbit)
 
-typedef struct _SME_DATA {
+typedef struct _SME_CONTEXT {
     PDEVICE_OBJECT DeviceObject;
     FAST_IO_DISPATCH FastIoDispatchTbl;
 
     SME_GET_CAPABILITIES_RESPONSE Capabilities;
 
-} SME_DATA, *PSME_DATA;
+    ULONG_PTR Debug[20];
+} SME_CONTEXT, *PSME_CONTEXT;
 
-static SME_DATA SmeContext = { 0 };
+static SME_CONTEXT SmeContext = { 0 };
 
 NTSTATUS
 DriverEntry (
@@ -271,11 +285,11 @@ SmepSetCbit (
     NTSTATUS status;
     ULONG_PTR end;
     ULONG_PTR address;
-    ULONG pml4Idx, pdptIdx, pdeIdx, pteIdx;
-    ULONG_PTR pml4, pdpt, pd, pt;
-    ULONG_PTR pml4e, pdpe, pde;
-    PULONG_PTR pte;
+    ULONG pml4Idx, pdptIdx, pdtIdx, ptIdx;
+    ULONG_PTR pml4, pdpt, pdt, pt;
+    ULONG_PTR pte;
     SME_GET_CAPABILITIES_RESPONSE capabilities = { 0 };
+    PULONGLONG nonPagedBuffer = NULL;
 
     //
     // This function is called during a fast io dispatch so we should 
@@ -293,7 +307,15 @@ SmepSetCbit (
         goto end;
     }
 
-    //todo: test address page aligned
+    //
+    // Allocate buffer on the NonPagedPool for reading from physical memory.
+    //
+
+    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(*nonPagedBuffer));
+    if (NULL == nonPagedBuffer) {
+        status = STATUS_NO_MEMORY;
+        goto end;
+    }
 
     //
     // Set C-bit on each page in the allocated region.
@@ -302,46 +324,124 @@ SmepSetCbit (
     address = (ULONG_PTR)SetCbitRequest->Address;
     end = address + SetCbitRequest->Size - 1;
 
-    do {
+    if (0 != address % PAGE_SIZE) {
         //
-        // Access to ensure physical memory is allocated to back the page.
+        // Address is not page-aligned
         //
+
+        status = STATUS_INVALID_PARAMETER;
+        goto end;
+    }
+
+    __try {
+        do {
+            //
+            // Access to ensure physical memory is allocated to back the page.
+            //
 
 #pragma warning (suppress:4189)
-        volatile ULONG whocares = *(ULONG*)address;
+            volatile ULONG whocares = *(ULONG*)address;
 
-        //
-        // Locate the PTE.
-        //
+            //
+            // Locate the PTE.
+            //
 
-        pml4Idx = (address >> 39i64) & 0x1ff;
-        pdptIdx = (address >> 30i64) & 0x1ff;
-        pdeIdx = (address >> 21i64) & 0x1ff;
-        pteIdx = (address >> 12i64) & 0x1ff;
+            pml4Idx = (address >> 39i64) & 0x1ff;
+            pdptIdx = (address >> 30i64) & 0x1ff;
+            pdtIdx = (address >> 21i64) & 0x1ff;
+            ptIdx = (address >> 12i64) & 0x1ff;
+
+            SmeContext.Debug[0] = address;
+            SmeContext.Debug[1] = pml4Idx;
+            SmeContext.Debug[2] = pdptIdx;
+            SmeContext.Debug[3] = pdtIdx;
+            SmeContext.Debug[4] = ptIdx;
 
 #define ENTRY_SIZE 8
-#define ENTRY_ADDRESS(b, i) (b + (i * ENTRY_SIZE))
-#define ENTRY(b,i) ((ULONG_PTR*)ENTRY_ADDRESS(b,i))
-#define READ_ENTRY(b,i) (*ENTRY(b,i))
+#define ENTRY_ADDRESS(b, i) (PVOID)(b + (i * ENTRY_SIZE))
+#define READ_ENTRY(b,i) _readPhysicalMemory(ENTRY_ADDRESS(b, i), ENTRY_SIZE, nonPagedBuffer)
+#define TABLE_BASE_ADDRESS_BITS 0xffffffffff000
 
-        pml4 = __readcr3() & ~0x1f;
-        pml4e = READ_ENTRY(pml4, pml4Idx);
-        pdpt = pml4e >> 12;
-        pdpe = READ_ENTRY(pdpt, pdptIdx);
-        pd = pdpe >> 12;
-        pde = READ_ENTRY(pd, pdeIdx);
-        pt = pde >> 12;
-        pte = ENTRY(pt, pteIdx);
+            pml4 = __readcr3() & TABLE_BASE_ADDRESS_BITS;
+            SmeContext.Debug[5] = pml4;
 
-        //
-        // Set C-bit in PTE to enable encryption on the page.
-        //
+            READ_ENTRY(pml4, pml4Idx);
+            pdpt = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
+            SmeContext.Debug[6] = pdpt;
 
-        *pte |= 1i64 << capabilities.PageTableCbitIdx;
+            READ_ENTRY(pdpt, pdptIdx);
+            pdt = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
+            SmeContext.Debug[7] = pdt;
 
-        address += PAGE_SIZE;
-    } while (address < end);
+            READ_ENTRY(pdt, pdtIdx);
+            pt = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
+            SmeContext.Debug[8] = pt;
+
+            PHYSICAL_ADDRESS pa;
+            pa.QuadPart = pt + (ptIdx*8);
+            SmeContext.Debug[10] = (ULONG_PTR)MmGetVirtualForPhysical(pa);
+            SmeContext.Debug[11] = *(ULONG_PTR*)SmeContext.Debug[10];
+
+               //
+               // Set C-bit in PTE to enable encryption on the page.
+               //
+
+              // *pte |= 1i64 << capabilities.PageTableCbitIdx;
+            address += PAGE_SIZE;
+        } while (address < end);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = STATUS_UNSUCCESSFUL;
+        goto end;
+    }
+
+    status = STATUS_SUCCESS;
 
 end:
+    if (NULL != nonPagedBuffer) {
+        ExFreePool(nonPagedBuffer);
+        nonPagedBuffer = NULL;
+    }
+
     return status;
+}
+
+#pragma warning (disable:4201)
+typedef struct _MM_COPY_ADDRESS {
+    union {
+        PVOID            VirtualAddress;
+        PHYSICAL_ADDRESS PhysicalAddress;
+    };
+} MM_COPY_ADDRESS, *PMMCOPY_ADDRESS;
+
+NTSTATUS MmCopyMemory(
+    PVOID           TargetAddress,
+    MM_COPY_ADDRESS SourceAddress,
+    SIZE_T          NumberOfBytes,
+    ULONG           Flags,
+    PSIZE_T         NumberOfBytesTransferred
+);
+
+#include <ntddk.h>
+
+FORCEINLINE
+VOID
+_readPhysicalMemory (
+    _In_ PVOID Address,
+    _In_ SIZE_T Size,
+    _Out_writes_bytes_(Size) PVOID BufferNonPaged
+    )
+{
+    MM_COPY_ADDRESS address;
+
+    address.PhysicalAddress.QuadPart = (LONGLONG)Address;
+
+    //
+    // Ignore failures and trust that the inputs are valid.
+    //
+
+    MmCopyMemory(BufferNonPaged, 
+                 address, 
+                 Size, 
+        1 /*MM_COPY_MEMORY_PHYSICAL*/,
+                 &Size);
 }

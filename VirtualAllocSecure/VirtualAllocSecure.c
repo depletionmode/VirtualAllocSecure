@@ -17,6 +17,7 @@ BOOLEAN _testSystemSmeCapable();
 
 #define DEVICE_NAME "\\\\.\\Sme"
 
+#include <stdio.h>
 PVOID
 VirtualAllocSecure (
     _In_ SIZE_T Size,
@@ -53,7 +54,7 @@ VirtualAllocSecure (
     }
 
     releaseNeeded = TRUE;
-
+    printf("address=0x%p\n", address);
     //
     // Write a magic value to the page prior to enabling SME on the page 
     // to enable testing of functioning encryption.
@@ -102,7 +103,7 @@ VirtualAllocSecure (
         goto end;
     }
 
-    ZeroMemory(address, Size);
+    //ZeroMemory(address, Size);
 
     releaseNeeded = FALSE;
 
@@ -112,13 +113,13 @@ end:
     }
 
     if (releaseNeeded) {
-        VirtualFree(address, 0, MEM_RELEASE);
+        //VirtualFree(address, 0, MEM_RELEASE);
         address = NULL;
     }
 
     return address;
 }
-#include <stdio.h>
+
 BOOLEAN _testSystemSmeCapable()
 {
     HANDLE hDevice;
