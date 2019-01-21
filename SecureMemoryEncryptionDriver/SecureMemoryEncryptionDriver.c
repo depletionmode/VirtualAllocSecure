@@ -103,6 +103,9 @@ typedef struct _SME_MDL_NODE {
 
 static SME_CONTEXT SmeContext = { 0 };
 
+#define POOL_TAG_(n) #@n    // https://docs.microsoft.com/en-us/cpp/preprocessor/charizing-operator-hash-at
+#define POOL_TAG(n) POOL_TAG_(n##xaV)
+
 NTSTATUS
 DriverEntry (
     _In_ PDRIVER_OBJECT DriverObject,
@@ -353,7 +356,7 @@ SmepAllocate (
     ULONG pageCount;
     PVOID pte;
     PULONG_PTR nonPagedBuffer = NULL;
-    PVOID userModeBuffer = NULL;
+    PVOID kernelModeBuffer = NULL;
     BOOLEAN releaseNeeded = FALSE;
     PSME_MDL_NODE mdlNode = NULL;
 
@@ -368,7 +371,9 @@ SmepAllocate (
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
     //
 
-    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(ULONG_PTR));
+    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPool, 
+                                           sizeof(ULONG_PTR), 
+                                           POOL_TAG(1));
     if (NULL == nonPagedBuffer) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
@@ -389,21 +394,23 @@ SmepAllocate (
     pageCount = (ULONG)((AllocateRequest->Size / PAGE_SIZE) +
                         (AllocateRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
 
-    userModeBuffer = ExAllocatePool(NonPagedPool, pageCount * PAGE_SIZE);
-    if (NULL == userModeBuffer) {
+    kernelModeBuffer = ExAllocatePoolWithTag(NonPagedPool, 
+                                             pageCount * PAGE_SIZE, POOL_TAG(K));
+    if (NULL == kernelModeBuffer) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
     }
     releaseNeeded = TRUE;
 
-    mdlNode = ExAllocatePool(PagedPool, sizeof(SME_MDL_NODE));
+    mdlNode = ExAllocatePoolWithTag(PagedPool, 
+                                    sizeof(SME_MDL_NODE), POOL_TAG(M));
     if (NULL == mdlNode) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
     }
     RtlZeroMemory(mdlNode, sizeof(SME_MDL_NODE));
 
-    mdlNode->Mdl = IoAllocateMdl(userModeBuffer,
+    mdlNode->Mdl = IoAllocateMdl(kernelModeBuffer,
                                  PAGE_SIZE,
                                  FALSE, 
                                  FALSE, 
@@ -505,18 +512,18 @@ end:
             IoFreeMdl(mdlNode->Mdl);
         }
 
-        ExFreePool(mdlNode);
+        ExFreePoolWithTag(mdlNode, POOL_TAG(M));
         mdlNode = NULL;
     }
 
     if (releaseNeeded) {
-        ExFreePool(userModeBuffer);
-        userModeBuffer = NULL;
+        ExFreePoolWithTag(kernelModeBuffer, POOL_TAG(K));
+        kernelModeBuffer = NULL;
         AllocateResponse->Address = NULL;
     }
 
     if (NULL != nonPagedBuffer) {
-        ExFreePool(nonPagedBuffer);
+        ExFreePoolWithTag(nonPagedBuffer, POOL_TAG(1));
         nonPagedBuffer = NULL;
     }
 
@@ -556,6 +563,8 @@ SmepFree (
         if (mdlNode->Address == FreeRequest->Address) {
             mdl = mdlNode->Mdl;
             RemoveEntryList(&mdlNode->ListEntry);
+
+            ExFreePoolWithTag(mdlNode, POOL_TAG(M));
             break;
         }
 
@@ -581,7 +590,9 @@ SmepFree (
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
     //
     
-    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(ULONG_PTR));
+    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPool, 
+                                           sizeof(ULONG_PTR), 
+                                           POOL_TAG(1));
     if (NULL == nonPagedBuffer) {
         //
         // If this fails on this path, we're in a spot of trouble (TODO).
@@ -614,13 +625,13 @@ SmepFree (
     MmUnlockPages(mdl);
     IoFreeMdl(mdl);
 
-    ExFreePool(kernelModeAddress);
+    ExFreePoolWithTag(kernelModeAddress, POOL_TAG(K));
 
     status = STATUS_SUCCESS;
 
 end:
     if (NULL != nonPagedBuffer) {
-        ExFreePool(nonPagedBuffer);
+        ExFreePoolWithTag(nonPagedBuffer, POOL_TAG(1));
         nonPagedBuffer = NULL;
     }
 
