@@ -702,6 +702,7 @@ _getPteVaForUserModeVa (
     ptIdx = (address >> 12i64) & 0x1ff;
 
 #define ENTRY_SIZE 8
+#define ENTRY() (*NonPagedStorage)
 #define ENTRY_ADDRESS(b, i) (PVOID)(b + (i * ENTRY_SIZE))
 #define READ_ENTRY(b,i) _readPhysicalMemory(ENTRY_ADDRESS(b, i), ENTRY_SIZE, NonPagedStorage)
 #define TABLE_BASE_ADDRESS_BITS 0xffffffffff000
@@ -709,16 +710,13 @@ _getPteVaForUserModeVa (
     pml4 = __readcr3() & TABLE_BASE_ADDRESS_BITS;
 
     READ_ENTRY(pml4, pml4Idx);
-    pdpt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
+    pdpt = ENTRY() & TABLE_BASE_ADDRESS_BITS;
 
     READ_ENTRY(pdpt, pdptIdx);
-    pdt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
+    pdt = ENTRY() & TABLE_BASE_ADDRESS_BITS;
 
     READ_ENTRY(pdt, pdtIdx);
-    pt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
-
-    READ_ENTRY(pt, ptIdx);
-    pte = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
+    pt = ENTRY() & TABLE_BASE_ADDRESS_BITS;
 
     pa.QuadPart = pt + (ptIdx * 8);
     pte = (ULONG_PTR)MmGetVirtualForPhysical(pa);
