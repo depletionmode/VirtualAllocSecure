@@ -49,7 +49,7 @@ VirtualAllocSecure (
 
         goto end;
     }
-    
+
     //
     // Call driver to allocate secure memory region.
     //
@@ -83,14 +83,15 @@ VirtualAllocSecure (
         goto end;
     }
     releaseNeeded = TRUE;
-
+    
     FlushInstructionCache(GetCurrentProcess(), response.Address, Size);
 
     //
     // Test magic value. If encryption is now enabled, it should not match the 
     // value previously written (as this value is now 'decrypted').
     //
-    
+
+    printf("magic value 0x%x!\n", *(ULONG*)response.Address);
     if (*(ULONG*)response.Address == 0xf00d3333) {
         SetLastError(ERROR_ENCRYPTION_FAILED);
 
@@ -105,7 +106,7 @@ VirtualAllocSecure (
 
 end:
     if (releaseNeeded) {
-        //VirtualFreeSecure(response.Address);
+        VirtualFreeSecure(response.Address);
     }
 
     if (INVALID_HANDLE_VALUE != hDevice) {
@@ -141,9 +142,10 @@ VirtualFreeSecure(
     }
 
     request.Address = Address;
+    printf("Releasing 0x%p\n", request.Address);
 
     result = DeviceIoControl(hDevice,
-                             SME_IOCTL_ALLOCATE,
+                             SME_IOCTL_FREE,
                              &request,
                              sizeof(request),
                              NULL,
@@ -151,6 +153,7 @@ VirtualFreeSecure(
                              NULL,
                              NULL);
     if (!result) {
+        printf("Release failed");
         goto end;
     }
 

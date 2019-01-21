@@ -355,19 +355,6 @@ SmepAllocate (
     }
 
     //
-    // Allocate NonPagedPool memory for UserMode.
-    //
-
-    pageCount = (ULONG)((AllocateRequest->Size / PAGE_SIZE) + (AllocateRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
-
-    userModeBuffer = ExAllocatePool(NonPagedPool, pageCount * PAGE_SIZE);
-    if (NULL == userModeBuffer) {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto end;
-    }
-    releaseNeeded = TRUE;
-
-    //
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
     //
 
@@ -383,11 +370,25 @@ SmepAllocate (
     // the memory region in the PTE. This means that operations (such 
     // as paging) get seriously messed up as Mm is working on a 
     // corrupt physical base address. To (attempt) to mitigate this, 
-    // we Probe+Lock the physical pages.
+    // we allocate off the NonPagedPool and then Probe+Lock the physical pages 
+    // for good measure.
+    // Truthfully, any kernel operation that attempts to look up the Pfn in 
+    // the database will likely fail as the index will be off.
     //
 
+    pageCount = (ULONG)((AllocateRequest->Size / PAGE_SIZE) +
+        (AllocateRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
+
+    userModeBuffer = ExAllocatePool(NonPagedPool, pageCount * PAGE_SIZE);
+    if (NULL == userModeBuffer) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto end;
+    }
+    releaseNeeded = TRUE;
+
+    RtlSecureZeroMemory(userModeBuffer, pageCount * PAGE_SIZE);
     mdl = IoAllocateMdl(userModeBuffer,
-                        PAGE_SIZE,//pageCount * PAGE_SIZE, 
+                        pageCount * PAGE_SIZE, 
                         FALSE, 
                         FALSE, 
                         NULL);
@@ -426,6 +427,8 @@ SmepAllocate (
     //
 
     *(ULONG*)address = 0xf00d3333;
+
+    AllocateResponse->Address = (PVOID)address;
     
     do {
         __wbinvd();
@@ -436,7 +439,7 @@ SmepAllocate (
         // Set C-bit in PTE to enable encryption on the page.
         //
 
-       // *(ULONG_PTR*)pte |= 1i64 << capabilities.PageTableCbitIdx;
+        *(ULONG_PTR*)pte |= 1i64 << capabilities.PageTableCbitIdx;
         SmeContext.Debug[13] = *(ULONG_PTR*)pte;
         SmeContext.Debug[14] = *(ULONG_PTR*)pte | 1i64 << capabilities.PageTableCbitIdx;
 
@@ -453,19 +456,18 @@ SmepAllocate (
 
     releaseNeeded = FALSE;
 
-    AllocateResponse->Address = (PVOID)address;
-
     status = STATUS_SUCCESS;
 
 end:
+    if (NULL != mdl) {
+        IoFreeMdl(mdl);
+        mdl = NULL;
+    }
+
     if (releaseNeeded) {
         ExFreePool(userModeBuffer);
         userModeBuffer = NULL;
-    }
-
-    if (NULL != mdl) {
-        //IoFreeMdl(mdl);
-        mdl = NULL;
+        AllocateResponse->Address = NULL;
     }
 
     if (NULL != nonPagedBuffer) {
@@ -495,6 +497,15 @@ SmepFree (
     //
 
     PAGED_CODE();
+
+    //
+    // Ensure SmeContext.Capabilities is populated.
+    //
+
+    status = SmepGetCapabilities(&capabilities);
+    if (!NT_SUCCESS(status)) {
+        goto end;
+    }
 
     mdl = SmeContext.DebugMdl; // Todo: find mdl 
 
@@ -526,7 +537,7 @@ SmepFree (
 
         *(ULONG_PTR*)pte &= ~(1i64 << capabilities.PageTableCbitIdx);
         SmeContext.Debug[15] = *(ULONG_PTR*)pte;
-        SmeContext.Debug[16] = *(ULONG_PTR*)pte | 1i64 << capabilities.PageTableCbitIdx;
+        SmeContext.Debug[16] = *(ULONG_PTR*)pte & ~(1i64 << capabilities.PageTableCbitIdx);
 
         _ReadWriteBarrier();
         __wbinvd();
