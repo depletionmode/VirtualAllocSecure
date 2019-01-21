@@ -54,10 +54,17 @@ SmepSetCbit (
 
 FORCEINLINE
 VOID
-_readPhysicalMemory(
+_readPhysicalMemory (
     _In_ PVOID Address,
     _In_ SIZE_T Size,
     _Out_writes_bytes_(Size) PVOID BufferNonPaged
+    );
+
+FORCEINLINE
+PVOID
+_getPteVaForUserModeVa (
+    _In_ PVOID Address,
+    _Inout_ PULONG_PTR NonPagedStorage
     );
 
 PVOID
@@ -79,6 +86,7 @@ typedef struct _SME_CONTEXT {
     SME_GET_CAPABILITIES_RESPONSE Capabilities;
 
     ULONG_PTR Debug[20];
+    PMDL DebugMdl;
 } SME_CONTEXT, *PSME_CONTEXT;
 
 static SME_CONTEXT SmeContext = { 0 };
@@ -130,6 +138,12 @@ SmeDriverUnload (
     )
 {
     UNREFERENCED_PARAMETER(DriverObject);
+
+    if (NULL != SmeContext.DebugMdl) {
+        MmUnlockPages(SmeContext.DebugMdl);
+        IoFreeMdl(SmeContext.DebugMdl);
+        SmeContext.DebugMdl = NULL;
+    }
 
     PAGED_CODE();
 
@@ -285,11 +299,11 @@ SmepSetCbit (
     NTSTATUS status;
     ULONG_PTR end;
     ULONG_PTR address;
-    ULONG pml4Idx, pdptIdx, pdtIdx, ptIdx;
-    ULONG_PTR pml4, pdpt, pdt, pt;
-    ULONG_PTR pte;
+    ULONG pageCount;
+    //PVOID pte;
+    PMDL mdl = NULL;
+    PULONG_PTR nonPagedBuffer = NULL;
     SME_GET_CAPABILITIES_RESPONSE capabilities = { 0 };
-    PULONGLONG nonPagedBuffer = NULL;
 
     //
     // This function is called during a fast io dispatch so we should 
@@ -306,23 +320,13 @@ SmepSetCbit (
     if (!NT_SUCCESS(status)) {
         goto end;
     }
-
-    //
-    // Allocate buffer on the NonPagedPool for reading from physical memory.
-    //
-
-    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(*nonPagedBuffer));
-    if (NULL == nonPagedBuffer) {
-        status = STATUS_NO_MEMORY;
-        goto end;
-    }
-
     //
     // Set C-bit on each page in the allocated region.
     //
 
     address = (ULONG_PTR)SetCbitRequest->Address;
-    end = address + SetCbitRequest->Size - 1;
+    pageCount = (ULONG)((SetCbitRequest->Size / PAGE_SIZE) + (SetCbitRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
+    end = address + (pageCount * PAGE_SIZE) - 1;
 
     if (0 != address % PAGE_SIZE) {
         //
@@ -333,17 +337,65 @@ SmepSetCbit (
         goto end;
     }
 
-    __try {
-        do {
-            //
-            // Access to ensure physical memory is allocated to back the page.
-            //
+    //
+    // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
+    //
 
-#pragma warning (suppress:4189)
-            volatile ULONG whocares = *(ULONG*)address;
+    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(*nonPagedBuffer));
+    if (NULL == nonPagedBuffer) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto end;
+    }
+
+    //
+    // Unfortunately as Mm does not (yet) support SME, the C-bit could 
+    // fall in the range that describes the physical base address of 
+    // the memory region in the PTE. This means that operations (such 
+    // as paging) get seriously messed up as Mm is working on a 
+    // corrupt physical base address. To (attempt) to mitigate this, 
+    // we Probe+Lock the physical pages.
+    //
+
+    mdl = IoAllocateMdl((PVOID)address, 
+                        PAGE_SIZE,//pageCount * PAGE_SIZE, 
+                        FALSE, 
+                        FALSE, 
+                        NULL);
+    if (NULL == mdl) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto end;
+    }
+
+    SmeContext.DebugMdl = mdl;
+
+    __try {
+        MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+    }__except (EXCEPTION_EXECUTE_HANDLER) {
+        status = STATUS_UNSUCCESSFUL;
+        goto end;
+    }
+    /*
+        do {
+//            //
+//            // Access to ensure physical memory is allocated to back the page.
+//            // (TODO: Is this necessary given that we're doing a Probe+Lock below?)
+//            //
+//
+//#pragma warning (suppress:4189)
+//            volatile ULONG whocares = *(ULONG*)address;
+            
+
+            __wbinvd();
+
+            pte = _getPteVaForUserModeVa(address, storage);
 
             //
             // Locate the PTE.
+            // Note: We read from physical memory, but it'd probably be 
+            //       cleaner just to locate the virtual addresses for the 
+            //       below and act upon them (which is exactly what we do for 
+            //       the PTE itself).
+            //       I'm interleaving both methods here for prosperity.
             //
 
             pml4Idx = (address >> 39i64) & 0x1ff;
@@ -377,26 +429,43 @@ SmepSetCbit (
             pt = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
             SmeContext.Debug[8] = pt;
 
-            PHYSICAL_ADDRESS pa;
+            READ_ENTRY(pt, ptIdx);
+            pte = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
+            SmeContext.Debug[9] = pte;
+
+            SmeContext.Debug[10] = pt + (ptIdx * 8);
             pa.QuadPart = pt + (ptIdx*8);
-            SmeContext.Debug[10] = (ULONG_PTR)MmGetVirtualForPhysical(pa);
-            SmeContext.Debug[11] = *(ULONG_PTR*)SmeContext.Debug[10];
+            pte = (ULONG_PTR)MmGetVirtualForPhysical(pa);
+            SmeContext.Debug[11] = pte;
+            SmeContext.Debug[12] = *(ULONG_PTR*)pte;
 
-               //
-               // Set C-bit in PTE to enable encryption on the page.
-               //
+            //
+            // Set C-bit in PTE to enable encryption on the page.
+            //
 
-              // *pte |= 1i64 << capabilities.PageTableCbitIdx;
+            *(ULONG_PTR*)pte |= 1i64 << capabilities.PageTableCbitIdx;
+            SmeContext.Debug[13] = *(ULONG_PTR*)pte;
+
+            _ReadWriteBarrier();
+            __wbinvd();
+            __invlpg(address);
+
+            // TODO: wait for external cache invalidation??
+
             address += PAGE_SIZE;
         } while (address < end);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = STATUS_UNSUCCESSFUL;
-        goto end;
-    }
+        */
+    //TODO: save MDL
+    mdl = NULL;
 
     status = STATUS_SUCCESS;
 
 end:
+    if (NULL != mdl) {
+        //IoFreeMdl(mdl);
+        mdl = NULL;
+    }
+
     if (NULL != nonPagedBuffer) {
         ExFreePool(nonPagedBuffer);
         nonPagedBuffer = NULL;
@@ -444,4 +513,72 @@ _readPhysicalMemory (
                  Size, 
         1 /*MM_COPY_MEMORY_PHYSICAL*/,
                  &Size);
+}
+
+FORCEINLINE
+PVOID
+_getPteVaForUserModeVa (
+    _In_ PVOID Address,
+    _Inout_ PULONG_PTR NonPagedStorage
+    )
+{
+    ULONG_PTR address;
+    ULONG pml4Idx, pdptIdx, pdtIdx, ptIdx;
+    ULONG_PTR pml4, pdpt, pdt, pt;
+    ULONG_PTR pte;
+    PHYSICAL_ADDRESS pa;
+
+    //
+    // Locate the PTE.
+    // Note: We read from physical memory, but it'd probably be 
+    //       cleaner just to locate the virtual addresses for the 
+    //       below and act upon them (which is exactly what we do for 
+    //       the PTE itself).
+    //       I'm interleaving both methods here for prosperity.
+    //
+
+    address = (ULONG_PTR)Address;
+
+    pml4Idx = (address >> 39i64) & 0x1ff;
+    pdptIdx = (address >> 30i64) & 0x1ff;
+    pdtIdx = (address >> 21i64) & 0x1ff;
+    ptIdx = (address >> 12i64) & 0x1ff;
+
+    SmeContext.Debug[0] = address;
+    SmeContext.Debug[1] = pml4Idx;
+    SmeContext.Debug[2] = pdptIdx;
+    SmeContext.Debug[3] = pdtIdx;
+    SmeContext.Debug[4] = ptIdx;
+
+#define ENTRY_SIZE 8
+#define ENTRY_ADDRESS(b, i) (PVOID)(b + (i * ENTRY_SIZE))
+#define READ_ENTRY(b,i) _readPhysicalMemory(ENTRY_ADDRESS(b, i), ENTRY_SIZE, NonPagedStorage)
+#define TABLE_BASE_ADDRESS_BITS 0xffffffffff000
+
+    pml4 = __readcr3() & TABLE_BASE_ADDRESS_BITS;
+    SmeContext.Debug[5] = pml4;
+
+    READ_ENTRY(pml4, pml4Idx);
+    pdpt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
+    SmeContext.Debug[6] = pdpt;
+
+    READ_ENTRY(pdpt, pdptIdx);
+    pdt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
+    SmeContext.Debug[7] = pdt;
+
+    READ_ENTRY(pdt, pdtIdx);
+    pt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
+    SmeContext.Debug[8] = pt;
+
+    READ_ENTRY(pt, ptIdx);
+    pte = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
+    SmeContext.Debug[9] = pte;
+
+    SmeContext.Debug[10] = pt + (ptIdx * 8);
+    pa.QuadPart = pt + (ptIdx * 8);
+    pte = (ULONG_PTR)MmGetVirtualForPhysical(pa);
+    SmeContext.Debug[11] = pte;
+    SmeContext.Debug[12] = *(ULONG_PTR*)pte;
+
+    return (PVOID)pte;
 }

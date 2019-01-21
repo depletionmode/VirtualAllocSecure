@@ -35,7 +35,9 @@ int main(int ac, char *av[])
     if (buffer == NULL) {
         printf("[!] ...buffer allocation failed (error=0x%x!)\n", GetLastError());
 
-        while (1);
+        while (1) {
+            Sleep(200);
+        };
         return -1;
     }
     printf("[+] ...buffer allocated @0x%p!\n", buffer);

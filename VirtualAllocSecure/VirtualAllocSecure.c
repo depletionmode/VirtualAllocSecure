@@ -92,6 +92,8 @@ VirtualAllocSecure (
         goto end;
     }
 
+    FlushInstructionCache(GetCurrentProcess(), address, Size);
+
     //
     // Test magic value. If encryption is now enabled, it should not match the 
     // value previously written (as this value is now 'decrypted').
