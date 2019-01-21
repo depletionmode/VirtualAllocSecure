@@ -104,7 +104,7 @@ typedef struct _SME_MDL_NODE {
 static SME_CONTEXT SmeContext = { 0 };
 
 #define POOL_TAG_(n) #@n    // https://docs.microsoft.com/en-us/cpp/preprocessor/charizing-operator-hash-at
-#define POOL_TAG(n) POOL_TAG_(n##xaV)
+#define POOL_TAG(n) POOL_TAG_(n##saV)
 
 NTSTATUS
 DriverEntry (
