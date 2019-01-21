@@ -150,6 +150,18 @@ DriverEntry (
     InitializeListHead(&SmeContext.MdlList);
 
     //
+    // This PoC does not currently support 5-level paging
+    // (not sure if supported by any current AMD CPUs).
+    // https://en.wikipedia.org/wiki/Intel_5-level_paging
+    //
+
+#define CR4_LA57_MASK (1 << 12)
+    if (0 != (__readcr4() & CR4_LA57_MASK)) {
+        status = STATUS_UNSUCCESSFUL;
+        goto end;
+    }
+
+    //
     // Populate SmeContext.Capabilities.
     //
 
