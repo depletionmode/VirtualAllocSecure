@@ -102,6 +102,9 @@ typedef struct _SME_CONTEXT {
 typedef struct _SME_MDL_NODE {
     PVOID Address;
     PMDL Mdl;
+
+    BOOLEAN Locked;
+
     LIST_ENTRY ListEntry;
 
 } SME_MDL_NODE, *PSME_MDL_NODE;
@@ -357,7 +360,6 @@ SmepAllocate (
     ULONG_PTR address;
     ULONG pageCount;
     PVOID pte;
-    PMDL mdl = NULL;
     PULONG_PTR nonPagedBuffer = NULL;
     PVOID userModeBuffer = NULL;
     BOOLEAN releaseNeeded = FALSE;
@@ -407,21 +409,23 @@ SmepAllocate (
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
     }
+    RtlZeroMemory(mdlNode, sizeof(SME_MDL_NODE));
 
-    mdl = IoAllocateMdl(userModeBuffer,
-                        PAGE_SIZE,
-                        FALSE, 
-                        FALSE, 
-                        NULL);
-    if (NULL == mdl) {
+    mdlNode->Mdl = IoAllocateMdl(userModeBuffer,
+                                 PAGE_SIZE,
+                                 FALSE, 
+                                 FALSE, 
+                                 NULL);
+    if (NULL == mdlNode->Mdl) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
     }
 
-    SmeContext.DebugMdl = mdl;
+    SmeContext.DebugMdl = mdlNode->Mdl;
 
     __try {
-        MmProbeAndLockPages(mdl, KernelMode, IoModifyAccess);
+        MmProbeAndLockPages(mdlNode->Mdl, KernelMode, IoModifyAccess);
+        mdlNode->Locked = TRUE;
 
         //
         // Map buffer into user-space. No need to attach to the process 
@@ -429,7 +433,7 @@ SmepAllocate (
         // running in the correct context.
         //
 
-        address = (ULONG_PTR)MmMapLockedPagesSpecifyCache(mdl,
+        address = (ULONG_PTR)MmMapLockedPagesSpecifyCache(mdlNode->Mdl,
                                                           UserMode,
                                                           MmNonCached,
                                                           NULL,
@@ -482,7 +486,7 @@ SmepAllocate (
     if (*(ULONG*)AllocateResponse->Address == ENCRYPTION_TEST_MAGIC) {
         status = STATUS_UNSUCCESSFUL;
 
-        //goto end;
+        goto end;
     }
 
     RtlSecureZeroMemory(AllocateResponse->Address, pageCount * PAGE_SIZE);
@@ -492,7 +496,6 @@ SmepAllocate (
     //
 
     mdlNode->Address = AllocateResponse->Address;
-    mdlNode->Mdl = mdl;
 
     InsertTailList(&SmeContext.MdlList, &mdlNode->ListEntry);
 
@@ -501,19 +504,22 @@ SmepAllocate (
     //
 
     mdlNode = NULL;
-    mdl = NULL;
     releaseNeeded = FALSE;
 
     status = STATUS_SUCCESS;
 
 end:
-    if (NULL != mdl) {
-        //TODO: release locks etcproperly
-        IoFreeMdl(mdl);
-        mdl = NULL;
-    }
-
     if (NULL != mdlNode) {
+        if (NULL != mdlNode->Mdl) {
+            if (NULL != mdlNode->Address) {
+                MmUnmapLockedPages(mdlNode->Address, mdlNode->Mdl);
+            }
+            if (mdlNode->Locked) {
+                MmUnlockPages(mdlNode->Mdl);
+            }
+            IoFreeMdl(mdlNode->Mdl);
+        }
+
         ExFreePool(mdlNode);
         mdlNode = NULL;
     }
