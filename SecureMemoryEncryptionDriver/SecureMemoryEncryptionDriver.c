@@ -89,9 +89,6 @@ typedef struct _SME_CONTEXT {
 
     LIST_ENTRY MdlList;
 
-    ULONG_PTR Debug[20];
-    PMDL DebugMdl;
-
 } SME_CONTEXT, *PSME_CONTEXT;
 
 typedef struct _SME_MDL_NODE {
@@ -416,8 +413,6 @@ SmepAllocate (
         goto end;
     }
 
-    SmeContext.DebugMdl = mdlNode->Mdl;
-
     __try {
         MmProbeAndLockPages(mdlNode->Mdl, KernelMode, IoModifyAccess);
         mdlNode->Locked = TRUE;
@@ -458,8 +453,6 @@ SmepAllocate (
         //
 
         *(ULONG_PTR*)pte |= 1i64 << SmeContext.Capabilities.PageTableCbitIdx;
-        SmeContext.Debug[13] = *(ULONG_PTR*)pte;
-        SmeContext.Debug[14] = *(ULONG_PTR*)pte | 1i64 << SmeContext.Capabilities.PageTableCbitIdx;
 
         KeMemoryBarrier();
         _mm_clflush((PVOID)address);
@@ -474,9 +467,6 @@ SmepAllocate (
     // Test magic value. If encryption is now enabled, it should not match the 
     // value previously written (as this value is now 'decrypted').
     //
-
-    SmeContext.Debug[18] = *(ULONG*)AllocateResponse->Address;
-    SmeContext.Debug[19] = *(ULONG*)userModeBuffer;
 
     if (*(ULONG*)AllocateResponse->Address == ENCRYPTION_TEST_MAGIC) {
         status = STATUS_UNSUCCESSFUL;
@@ -610,8 +600,6 @@ SmepFree (
         //
 
         *(ULONG_PTR*)pte &= ~(1i64 << SmeContext.Capabilities.PageTableCbitIdx);
-        SmeContext.Debug[15] = *(ULONG_PTR*)pte;
-        SmeContext.Debug[16] = *(ULONG_PTR*)pte & ~(1i64 << SmeContext.Capabilities.PageTableCbitIdx);
 
         KeMemoryBarrier();
         _mm_clflush((PVOID)address);
@@ -713,41 +701,27 @@ _getPteVaForUserModeVa (
     pdtIdx = (address >> 21i64) & 0x1ff;
     ptIdx = (address >> 12i64) & 0x1ff;
 
-    SmeContext.Debug[0] = address;
-    SmeContext.Debug[1] = pml4Idx;
-    SmeContext.Debug[2] = pdptIdx;
-    SmeContext.Debug[3] = pdtIdx;
-    SmeContext.Debug[4] = ptIdx;
-
 #define ENTRY_SIZE 8
 #define ENTRY_ADDRESS(b, i) (PVOID)(b + (i * ENTRY_SIZE))
 #define READ_ENTRY(b,i) _readPhysicalMemory(ENTRY_ADDRESS(b, i), ENTRY_SIZE, NonPagedStorage)
 #define TABLE_BASE_ADDRESS_BITS 0xffffffffff000
 
     pml4 = __readcr3() & TABLE_BASE_ADDRESS_BITS;
-    SmeContext.Debug[5] = pml4;
 
     READ_ENTRY(pml4, pml4Idx);
     pdpt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
-    SmeContext.Debug[6] = pdpt;
 
     READ_ENTRY(pdpt, pdptIdx);
     pdt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
-    SmeContext.Debug[7] = pdt;
 
     READ_ENTRY(pdt, pdtIdx);
     pt = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
-    SmeContext.Debug[8] = pt;
 
     READ_ENTRY(pt, ptIdx);
     pte = *NonPagedStorage & TABLE_BASE_ADDRESS_BITS;
-    SmeContext.Debug[9] = pte;
 
-    SmeContext.Debug[10] = pt + (ptIdx * 8);
     pa.QuadPart = pt + (ptIdx * 8);
     pte = (ULONG_PTR)MmGetVirtualForPhysical(pa);
-    SmeContext.Debug[11] = pte;
-    SmeContext.Debug[12] = *(ULONG_PTR*)pte;
 
     return (PVOID)pte;
 }
