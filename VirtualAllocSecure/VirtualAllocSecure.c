@@ -19,10 +19,9 @@ VirtualFreeSecure(
     _In_ PVOID Address
 );
 
-BOOLEAN _testSystemSmeCapable();
-
 #define DEVICE_NAME "\\\\.\\Sme"
 
+BOOLEAN _testSystemSmeCapable();
 #include <stdio.h>
 PVOID
 VirtualAllocSecure (
@@ -34,6 +33,7 @@ VirtualAllocSecure (
     BOOLEAN result;
     HANDLE hDevice = INVALID_HANDLE_VALUE;
     BOOLEAN releaseNeeded = FALSE;
+    DWORD error = 0;
 
     UNREFERENCED_PARAMETER(Protect); // TODO
 
@@ -45,7 +45,7 @@ VirtualAllocSecure (
     //
 
     if (!_testSystemSmeCapable()) {
-        SetLastError(ERROR_NOT_SUPPORTED);
+        error = ERROR_NOT_SUPPORTED;
 
         goto end;
     }
@@ -78,21 +78,11 @@ VirtualAllocSecure (
     if (!result) {
         goto end;
     } else if (NULL == response.Address) {
-        SetLastError(ERROR_MEMORY_HARDWARE);
+        error = ERROR_MEMORY_HARDWARE;
 
         goto end;
     }
     releaseNeeded = TRUE;
-    
-    FlushInstructionCache(GetCurrentProcess(), response.Address, Size);
-
-    if (*(ULONG*)response.Address == ENCRYPTION_TEST_MAGIC) {
-        SetLastError(ERROR_ENCRYPTION_FAILED);
-
-        *(ULONG*)response.Address = 0xaaaaa;
-        goto end;
-    }
-
 
     releaseNeeded = FALSE;
 
@@ -106,6 +96,8 @@ end:
     if (INVALID_HANDLE_VALUE != hDevice) {
         CloseHandle(hDevice);
     }
+
+    SetLastError(error);
 
     return address;
 }
@@ -136,7 +128,6 @@ VirtualFreeSecure(
     }
 
     request.Address = Address;
-    printf("Releasing 0x%p\n", request.Address);
 
     result = DeviceIoControl(hDevice,
                              SME_IOCTL_FREE,
@@ -147,7 +138,6 @@ VirtualFreeSecure(
                              NULL,
                              NULL);
     if (!result) {
-        printf("Release failed");
         goto end;
     }
 

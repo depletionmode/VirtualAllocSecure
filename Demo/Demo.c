@@ -35,12 +35,30 @@ int main(int ac, char *av[])
     printf("[-] Attempting to allocate encrypted memory...\n");
     PCHAR buffer = pVirtualAllocSecure(BUFFER_SIZE, PAGE_READWRITE);
     if (buffer == NULL) {
-        printf("[!] ...buffer allocation failed (error=0x%x!)\n", GetLastError());
+        // Retrieve the system error message for the last-error code
+
+        LPVOID lpMsgBuf;
+        DWORD dw = GetLastError();
+
+        FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                      FORMAT_MESSAGE_FROM_SYSTEM |
+                      FORMAT_MESSAGE_IGNORE_INSERTS,
+                      NULL,
+                      dw,
+                      MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                      (LPSTR)&lpMsgBuf,
+                      0, 
+                      NULL);
+
+        printf("[!] ...buffer allocation failed with error=0x%x | %s", dw, (LPSTR)lpMsgBuf);
+
+        LocalFree(lpMsgBuf);
 
         while (1) {
             Sleep(200);
         };
-        return -1;
+
+        ExitProcess(dw);
     }
     printf("[+] ...buffer allocated @0x%p; we're now living on the edge!\n", buffer);
 

@@ -96,7 +96,15 @@ typedef struct _SME_CONTEXT {
 
     ULONG_PTR Debug[20];
     PMDL DebugMdl;
+
 } SME_CONTEXT, *PSME_CONTEXT;
+
+typedef struct _SME_MDL_NODE {
+    PVOID Address;
+    PMDL Mdl;
+    LIST_ENTRY ListEntry;
+
+} SME_MDL_NODE, *PSME_MDL_NODE;
 
 static SME_CONTEXT SmeContext = { 0 };
 
@@ -353,6 +361,7 @@ SmepAllocate (
     PULONG_PTR nonPagedBuffer = NULL;
     PVOID userModeBuffer = NULL;
     BOOLEAN releaseNeeded = FALSE;
+    PSME_MDL_NODE mdlNode = NULL;
 
     //
     // This function is called during a fast io dispatch so we should 
@@ -384,7 +393,7 @@ SmepAllocate (
     //
 
     pageCount = (ULONG)((AllocateRequest->Size / PAGE_SIZE) +
-        (AllocateRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
+                        (AllocateRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
 
     userModeBuffer = ExAllocatePool(NonPagedPool, pageCount * PAGE_SIZE);
     if (NULL == userModeBuffer) {
@@ -393,8 +402,14 @@ SmepAllocate (
     }
     releaseNeeded = TRUE;
 
+    mdlNode = ExAllocatePool(PagedPool, sizeof(SME_MDL_NODE));
+    if (NULL != mdlNode) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto end;
+    }
+
     mdl = IoAllocateMdl(userModeBuffer,
-        PAGE_SIZE,//TODO pageCount * PAGE_SIZE,
+                        PAGE_SIZE,
                         FALSE, 
                         FALSE, 
                         NULL);
@@ -436,8 +451,6 @@ SmepAllocate (
 
     AllocateResponse->Address = (PVOID)address;
 
-    __wbinvd();
-
     do {
         pte = _getPteVaForUserModeVa((PVOID)address, nonPagedBuffer);
 
@@ -451,6 +464,7 @@ SmepAllocate (
 
         KeMemoryBarrier();
         _mm_clflush((PVOID)address);
+        __invlpg(address);
 
         address += PAGE_SIZE;
     } while (address < end);
@@ -462,17 +476,32 @@ SmepAllocate (
     // value previously written (as this value is now 'decrypted').
     //
 
-    if (*(ULONG*)userModeBuffer == ENCRYPTION_TEST_MAGIC) {
-  //      status = STATUS_UNSUCCESSFUL;
-//
- //       goto end;
+    SmeContext.Debug[18] = *(ULONG*)AllocateResponse->Address;
+    SmeContext.Debug[19] = *(ULONG*)userModeBuffer;
+
+    if (*(ULONG*)AllocateResponse->Address == ENCRYPTION_TEST_MAGIC) {
+        status = STATUS_UNSUCCESSFUL;
+
+        goto end;
     }
 
-    //RtlSecureZeroMemory(AllocateResponse->Address, pageCount * PAGE_SIZE);
-        
-    //TODO: save MDL
-    mdl = NULL;
+    RtlSecureZeroMemory(AllocateResponse->Address, pageCount * PAGE_SIZE);
+    
+    //
+    // Store MDL for later release.
+    //
 
+    mdlNode->Address = AllocateResponse->Address;
+    mdlNode->Mdl = mdl;
+
+    InsertTailList(&SmeContext.MdlList, &mdlNode->ListEntry);
+
+    //
+    // Disable cleanups.
+    //
+
+    mdlNode = NULL;
+    mdl = NULL;
     releaseNeeded = FALSE;
 
     status = STATUS_SUCCESS;
@@ -481,6 +510,11 @@ end:
     if (NULL != mdl) {
         IoFreeMdl(mdl);
         mdl = NULL;
+    }
+
+    if (NULL != mdlNode) {
+        ExFreePool(mdlNode);
+        mdlNode = NULL;
     }
 
     if (releaseNeeded) {
@@ -509,6 +543,8 @@ SmepFree (
     PMDL mdl = NULL;
     PULONG_PTR nonPagedBuffer = NULL;
     PVOID kernelModeAddress;
+    PLIST_ENTRY entry;
+    PSME_MDL_NODE mdlNode;
 
     //
     // This function is called during a fast io dispatch so we should 
@@ -517,7 +553,32 @@ SmepFree (
 
     PAGED_CODE();
 
-    mdl = SmeContext.DebugMdl; // Todo: find mdl 
+    entry = SmeContext.MdlList.Flink;
+    while (entry != &SmeContext.MdlList) {
+        //
+        // Locate MDL describing this address.
+        //
+
+        mdlNode = CONTAINING_RECORD(entry, SME_MDL_NODE, ListEntry);
+
+        if (mdlNode->Address == FreeRequest->Address) {
+            mdl = mdlNode->Mdl;
+            RemoveEntryList(&mdlNode->ListEntry);
+            break;
+        }
+
+        entry = entry->Flink;
+    }
+
+    if (NULL == mdl) {
+        //
+        // Not previously allocated by us.
+        //
+
+        status = STATUS_NOT_FOUND;
+
+        goto end;
+    }
 
     kernelModeAddress = mdl->StartVa;
 
@@ -527,7 +588,7 @@ SmepFree (
     //
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
     //
-
+    
     nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(ULONG_PTR));
     if (NULL == nonPagedBuffer) {
         //
@@ -537,8 +598,6 @@ SmepFree (
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
     }
-
-    __wbinvd();
 
     do {
 
@@ -554,6 +613,7 @@ SmepFree (
 
         KeMemoryBarrier();
         _mm_clflush((PVOID)address);
+        __invlpg(address);
 
         address += PAGE_SIZE;
     } while (address < end);
