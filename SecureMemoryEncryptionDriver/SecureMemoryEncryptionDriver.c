@@ -383,7 +383,7 @@ SmepAllocate (
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
     //
 
-    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPool, 
+    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPoolNx, 
                                            sizeof(ULONG_PTR), 
                                            POOL_TAG(1));
     if (NULL == nonPagedBuffer) {
@@ -406,7 +406,7 @@ SmepAllocate (
     pageCount = (ULONG)((AllocateRequest->Size / PAGE_SIZE) +
                         (AllocateRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
 
-    kernelModeBuffer = ExAllocatePoolWithTag(NonPagedPool, 
+    kernelModeBuffer = ExAllocatePoolWithTag(NonPagedPoolNx, 
                                              pageCount * PAGE_SIZE, POOL_TAG(K));
     if (NULL == kernelModeBuffer) {
         status = STATUS_INSUFFICIENT_RESOURCES;
@@ -602,7 +602,7 @@ SmepFree (
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
     //
     
-    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPool, 
+    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPoolNx, 
                                            sizeof(ULONG_PTR), 
                                            POOL_TAG(1));
     if (NULL == nonPagedBuffer) {
