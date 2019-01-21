@@ -15,14 +15,14 @@ VirtualAllocSecure (
 
 __declspec(dllexport)
 VOID
-VirtualFreeSecure(
+VirtualFreeSecure (
     _In_ PVOID Address
-);
+    );
 
 #define DEVICE_NAME "\\\\.\\Sme"
 
 BOOLEAN _testSystemSmeCapable();
-#include <stdio.h>
+
 PVOID
 VirtualAllocSecure (
     _In_ SIZE_T Size,

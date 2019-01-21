@@ -73,11 +73,6 @@ _getPteVaForUserModeVa (
     _Inout_ PULONG_PTR NonPagedStorage
     );
 
-PVOID
-MmGetVirtualForPhysical(
-    _In_ PHYSICAL_ADDRESS Address
-);
-
 #pragma alloc_text(INIT, DriverEntry)
 #pragma alloc_text(PAGE, SmeDriverUnload)
 #pragma alloc_text(PAGE, SmeDispatchCreate)
@@ -652,13 +647,14 @@ typedef struct _MM_COPY_ADDRESS {
     };
 } MM_COPY_ADDRESS, *PMMCOPY_ADDRESS;
 
-NTSTATUS MmCopyMemory(
-    PVOID           TargetAddress,
+NTSTATUS
+MmCopyMemory (
+    PVOID TargetAddress,
     MM_COPY_ADDRESS SourceAddress,
-    SIZE_T          NumberOfBytes,
-    ULONG           Flags,
-    PSIZE_T         NumberOfBytesTransferred
-);
+    SIZE_T NumberOfBytes,
+    ULONG Flags,
+    PSIZE_T NumberOfBytesTransferred
+    );
 
 FORCEINLINE
 VOID
@@ -682,6 +678,11 @@ _readPhysicalMemory (
                  1 /*MM_COPY_MEMORY_PHYSICAL*/,
                  &Size);
 }
+
+PVOID
+MmGetVirtualForPhysical (
+    _In_ PHYSICAL_ADDRESS Address
+    );
 
 FORCEINLINE
 PVOID

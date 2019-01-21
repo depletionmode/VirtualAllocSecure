@@ -35,8 +35,6 @@ int main(int ac, char *av[])
     printf("[-] Attempting to allocate encrypted memory...\n");
     PCHAR buffer = pVirtualAllocSecure(BUFFER_SIZE, PAGE_READWRITE);
     if (buffer == NULL) {
-        // Retrieve the system error message for the last-error code
-
         LPVOID lpMsgBuf;
         DWORD dw = GetLastError();
 
@@ -53,10 +51,6 @@ int main(int ac, char *av[])
         printf("[!] ...buffer allocation failed with error=0x%x | %s", dw, (LPSTR)lpMsgBuf);
 
         LocalFree(lpMsgBuf);
-
-        while (1) {
-            Sleep(200);
-        };
 
         ExitProcess(dw);
     }
