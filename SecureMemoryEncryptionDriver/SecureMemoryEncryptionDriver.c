@@ -92,6 +92,8 @@ typedef struct _SME_CONTEXT {
 
     SME_GET_CAPABILITIES_RESPONSE Capabilities;
 
+    LIST_ENTRY MdlList;
+
     ULONG_PTR Debug[20];
     PMDL DebugMdl;
 } SME_CONTEXT, *PSME_CONTEXT;
@@ -131,6 +133,21 @@ DriverEntry (
 
     status = IoCreateSymbolicLink((PUNICODE_STRING)&SmepWin32DeviceName, 
                                   (PUNICODE_STRING)&SmepDeviceName);
+    if (!NT_SUCCESS(status)) {
+        goto end;
+    }
+
+    //
+    // Linked-list for persisting MDLs describing allocated memory regions.
+    //
+
+    InitializeListHead(&SmeContext.MdlList);
+
+    //
+    // Populate SmeContext.Capabilities.
+    //
+
+    status = SmepGetCapabilities(&SmeContext.Capabilities);
     if (!NT_SUCCESS(status)) {
         goto end;
     }
@@ -336,7 +353,6 @@ SmepAllocate (
     PULONG_PTR nonPagedBuffer = NULL;
     PVOID userModeBuffer = NULL;
     BOOLEAN releaseNeeded = FALSE;
-    SME_GET_CAPABILITIES_RESPONSE capabilities = { 0 };
 
     //
     // This function is called during a fast io dispatch so we should 
@@ -344,15 +360,6 @@ SmepAllocate (
     //
 
     PAGED_CODE();
-
-    //
-    // Ensure SmeContext.Capabilities is populated.
-    //
-
-    status = SmepGetCapabilities(&capabilities);
-    if (!NT_SUCCESS(status)) {
-        goto end;
-    }
 
     //
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
@@ -386,9 +393,8 @@ SmepAllocate (
     }
     releaseNeeded = TRUE;
 
-    RtlSecureZeroMemory(userModeBuffer, pageCount * PAGE_SIZE);
     mdl = IoAllocateMdl(userModeBuffer,
-                        pageCount * PAGE_SIZE, 
+        PAGE_SIZE,//TODO pageCount * PAGE_SIZE,
                         FALSE, 
                         FALSE, 
                         NULL);
@@ -426,30 +432,43 @@ SmepAllocate (
     // to enable testing of functioning encryption.
     //
 
-    *(ULONG*)address = 0xf00d3333;
+    *(ULONG*)address = ENCRYPTION_TEST_MAGIC;
 
     AllocateResponse->Address = (PVOID)address;
-    
-    do {
-        __wbinvd();
 
+    __wbinvd();
+
+    do {
         pte = _getPteVaForUserModeVa((PVOID)address, nonPagedBuffer);
 
         //
         // Set C-bit in PTE to enable encryption on the page.
         //
 
-        *(ULONG_PTR*)pte |= 1i64 << capabilities.PageTableCbitIdx;
+        *(ULONG_PTR*)pte |= 1i64 << SmeContext.Capabilities.PageTableCbitIdx;
         SmeContext.Debug[13] = *(ULONG_PTR*)pte;
-        SmeContext.Debug[14] = *(ULONG_PTR*)pte | 1i64 << capabilities.PageTableCbitIdx;
+        SmeContext.Debug[14] = *(ULONG_PTR*)pte | 1i64 << SmeContext.Capabilities.PageTableCbitIdx;
 
-        _ReadWriteBarrier();
-        __wbinvd();
-
-        //// TODO: wait for external cache invalidation??
+        KeMemoryBarrier();
+        _mm_clflush((PVOID)address);
 
         address += PAGE_SIZE;
     } while (address < end);
+
+    __wbinvd();
+
+    //
+    // Test magic value. If encryption is now enabled, it should not match the 
+    // value previously written (as this value is now 'decrypted').
+    //
+
+    if (*(ULONG*)userModeBuffer == ENCRYPTION_TEST_MAGIC) {
+  //      status = STATUS_UNSUCCESSFUL;
+//
+ //       goto end;
+    }
+
+    //RtlSecureZeroMemory(AllocateResponse->Address, pageCount * PAGE_SIZE);
         
     //TODO: save MDL
     mdl = NULL;
@@ -489,7 +508,7 @@ SmepFree (
     PVOID pte;
     PMDL mdl = NULL;
     PULONG_PTR nonPagedBuffer = NULL;
-    SME_GET_CAPABILITIES_RESPONSE capabilities = { 0 };
+    PVOID kernelModeAddress;
 
     //
     // This function is called during a fast io dispatch so we should 
@@ -498,16 +517,9 @@ SmepFree (
 
     PAGED_CODE();
 
-    //
-    // Ensure SmeContext.Capabilities is populated.
-    //
-
-    status = SmepGetCapabilities(&capabilities);
-    if (!NT_SUCCESS(status)) {
-        goto end;
-    }
-
     mdl = SmeContext.DebugMdl; // Todo: find mdl 
+
+    kernelModeAddress = mdl->StartVa;
 
     address = (ULONG_PTR)FreeRequest->Address;
     end = address + mdl->Size - 1;
@@ -526,8 +538,9 @@ SmepFree (
         goto end;
     }
 
+    __wbinvd();
+
     do {
-        __wbinvd();
 
         pte = _getPteVaForUserModeVa((PVOID)address, nonPagedBuffer);
 
@@ -535,26 +548,27 @@ SmepFree (
         // Clear C-bit in PTE to disable encryption on the page.
         //
 
-        *(ULONG_PTR*)pte &= ~(1i64 << capabilities.PageTableCbitIdx);
+        *(ULONG_PTR*)pte &= ~(1i64 << SmeContext.Capabilities.PageTableCbitIdx);
         SmeContext.Debug[15] = *(ULONG_PTR*)pte;
-        SmeContext.Debug[16] = *(ULONG_PTR*)pte & ~(1i64 << capabilities.PageTableCbitIdx);
+        SmeContext.Debug[16] = *(ULONG_PTR*)pte & ~(1i64 << SmeContext.Capabilities.PageTableCbitIdx);
 
-        _ReadWriteBarrier();
-        __wbinvd();
+        KeMemoryBarrier();
+        _mm_clflush((PVOID)address);
 
         address += PAGE_SIZE;
     } while (address < end);
 
+    __wbinvd();
+
+    MmUnmapLockedPages(FreeRequest->Address, mdl);
+    MmUnlockPages(mdl);
+    IoFreeMdl(mdl);
+
+    ExFreePool(kernelModeAddress);
+
     status = STATUS_SUCCESS;
 
 end:
-    if (NULL != mdl) {
-        MmUnmapLockedPages(FreeRequest->Address, mdl);
-        MmUnlockPages(mdl);
-        IoFreeMdl(mdl);
-        mdl = NULL;
-    }
-
     if (NULL != nonPagedBuffer) {
         ExFreePool(nonPagedBuffer);
         nonPagedBuffer = NULL;

@@ -42,14 +42,14 @@ int main(int ac, char *av[])
         };
         return -1;
     }
-    printf("[+] ...buffer allocated @0x%p!\n", buffer);
+    printf("[+] ...buffer allocated @0x%p; we're now living on the edge!\n", buffer);
 
     printf("[-] Writing \"ArthurMorgan\" to memory region...\n");
     strcpy_s(buffer, BUFFER_SIZE, "ArthurMorgan");
     printf("[+] ...read \"%s\" from memory region!\n", buffer);
 
     pVirtualFreeSecure(buffer);
-    printf("[-] Memory released.\n");
+    printf("[-] Memory released. Bugcheck avoided. :)\n");
 
     return 0;
 }

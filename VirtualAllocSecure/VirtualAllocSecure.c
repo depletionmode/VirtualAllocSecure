@@ -86,19 +86,13 @@ VirtualAllocSecure (
     
     FlushInstructionCache(GetCurrentProcess(), response.Address, Size);
 
-    //
-    // Test magic value. If encryption is now enabled, it should not match the 
-    // value previously written (as this value is now 'decrypted').
-    //
-
-    printf("magic value 0x%x!\n", *(ULONG*)response.Address);
-    if (*(ULONG*)response.Address == 0xf00d3333) {
+    if (*(ULONG*)response.Address == ENCRYPTION_TEST_MAGIC) {
         SetLastError(ERROR_ENCRYPTION_FAILED);
 
+        *(ULONG*)response.Address = 0xaaaaa;
         goto end;
     }
 
-    //ZeroMemory(address, Size);
 
     releaseNeeded = FALSE;
 
