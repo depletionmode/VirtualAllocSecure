@@ -3,3 +3,10 @@
 ################################################################################
 
 /.vs/VirtualAllocSecure/v15
+/Debug
+/Demo/x64
+/SecureMemoryEncryptionDriver/Debug
+/SecureMemoryEncryptionDriver/x64
+/VirtualAllocSecure/x64
+/VirtualAllocSecure/Debug
+/x64

@@ -48,8 +48,14 @@ SmepGetCapabilities (
     );
 
 NTSTATUS
-SmepSetCbit (
-    _In_ PSME_SET_CBIT_REQUEST SetCbitRequest
+SmepAllocate (
+    _In_ PSME_ALLOCATE_REQUEST AllocateRequest,
+    _In_ PSME_ALLOCATE_RESPONSE AllocateResponse
+    );
+
+NTSTATUS
+SmepFree (
+    _In_ PSME_FREE_REQUEST FreeRequest
     );
 
 FORCEINLINE
@@ -77,7 +83,8 @@ MmGetVirtualForPhysical(
 #pragma alloc_text(PAGE, SmeDispatchCreate)
 #pragma alloc_text(PAGE, SmeDispatchFastIoDeviceControl)
 #pragma alloc_text(PAGE, SmepGetCapabilities)
-#pragma alloc_text(PAGE, SmepSetCbit)
+#pragma alloc_text(PAGE, SmepAllocate)
+#pragma alloc_text(PAGE, SmepFree)
 
 typedef struct _SME_CONTEXT {
     PDEVICE_OBJECT DeviceObject;
@@ -138,12 +145,6 @@ SmeDriverUnload (
     )
 {
     UNREFERENCED_PARAMETER(DriverObject);
-
-    if (NULL != SmeContext.DebugMdl) {
-        MmUnlockPages(SmeContext.DebugMdl);
-        IoFreeMdl(SmeContext.DebugMdl);
-        SmeContext.DebugMdl = NULL;
-    }
 
     PAGED_CODE();
 
@@ -219,8 +220,9 @@ SmeDispatchFastIoDeviceControl (
         }
 
         break;
-    case SME_IOCTL_SET_CBIT:
-        if (InputBufferLength < sizeof(SME_SET_CBIT_REQUEST)) {
+    case SME_IOCTL_ALLOCATE:
+        if (InputBufferLength < sizeof(SME_ALLOCATE_REQUEST) ||
+            OutputBufferLength < sizeof(SME_ALLOCATE_RESPONSE)) {
             status = STATUS_INVALID_PARAMETER;
             goto end;
         }
@@ -230,13 +232,41 @@ SmeDispatchFastIoDeviceControl (
                          InputBufferLength, 
                          1);
 
+            ProbeForWrite(OutputBuffer,
+                          sizeof(SME_ALLOCATE_RESPONSE),
+                          1);
+
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             status = GetExceptionCode();
 
             goto end;
         }
 
-        status = SmepSetCbit(InputBuffer);
+        status = SmepAllocate(InputBuffer, OutputBuffer);
+        if (NT_SUCCESS(status)) {
+            responseLength = sizeof(SME_ALLOCATE_RESPONSE);
+        }
+
+        break;
+    case SME_IOCTL_FREE:
+        if (InputBufferLength < sizeof(SME_FREE_REQUEST)) {
+            status = STATUS_INVALID_PARAMETER;
+            goto end;
+        }
+
+        __try {
+            ProbeForRead(InputBuffer,
+                InputBufferLength,
+                1);
+
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            status = GetExceptionCode();
+
+            goto end;
+        }
+
+        status = SmepFree(InputBuffer);
 
         break;
     default:
@@ -292,17 +322,20 @@ end:
 }
 
 NTSTATUS
-SmepSetCbit (
-    _In_ PSME_SET_CBIT_REQUEST SetCbitRequest
+SmepAllocate (
+    _In_ PSME_ALLOCATE_REQUEST AllocateRequest,
+    _In_ PSME_ALLOCATE_RESPONSE AllocateResponse
     )
 {
     NTSTATUS status;
     ULONG_PTR end;
     ULONG_PTR address;
     ULONG pageCount;
-    //PVOID pte;
+    PVOID pte;
     PMDL mdl = NULL;
     PULONG_PTR nonPagedBuffer = NULL;
+    PVOID userModeBuffer = NULL;
+    BOOLEAN releaseNeeded = FALSE;
     SME_GET_CAPABILITIES_RESPONSE capabilities = { 0 };
 
     //
@@ -320,28 +353,25 @@ SmepSetCbit (
     if (!NT_SUCCESS(status)) {
         goto end;
     }
+
     //
-    // Set C-bit on each page in the allocated region.
+    // Allocate NonPagedPool memory for UserMode.
     //
 
-    address = (ULONG_PTR)SetCbitRequest->Address;
-    pageCount = (ULONG)((SetCbitRequest->Size / PAGE_SIZE) + (SetCbitRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
-    end = address + (pageCount * PAGE_SIZE) - 1;
+    pageCount = (ULONG)((AllocateRequest->Size / PAGE_SIZE) + (AllocateRequest->Size % PAGE_SIZE == 0 ? 0 : 1));
 
-    if (0 != address % PAGE_SIZE) {
-        //
-        // Address is not page-aligned
-        //
-
-        status = STATUS_INVALID_PARAMETER;
+    userModeBuffer = ExAllocatePool(NonPagedPool, pageCount * PAGE_SIZE);
+    if (NULL == userModeBuffer) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
     }
+    releaseNeeded = TRUE;
 
     //
     // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
     //
 
-    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(*nonPagedBuffer));
+    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(ULONG_PTR));
     if (NULL == nonPagedBuffer) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
@@ -356,7 +386,7 @@ SmepSetCbit (
     // we Probe+Lock the physical pages.
     //
 
-    mdl = IoAllocateMdl((PVOID)address, 
+    mdl = IoAllocateMdl(userModeBuffer,
                         PAGE_SIZE,//pageCount * PAGE_SIZE, 
                         FALSE, 
                         FALSE, 
@@ -369,100 +399,148 @@ SmepSetCbit (
     SmeContext.DebugMdl = mdl;
 
     __try {
-        MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+        MmProbeAndLockPages(mdl, KernelMode, IoModifyAccess);
+
+        //
+        // Map buffer into user-space. No need to attach to the process 
+        // context as we're running via FastIo and therefore are already 
+        // running in the correct context.
+        //
+
+        address = (ULONG_PTR)MmMapLockedPagesSpecifyCache(mdl,
+                                                          UserMode,
+                                                          MmNonCached,
+                                                          NULL,
+                                                          FALSE,
+                                                          NormalPagePriority);
     }__except (EXCEPTION_EXECUTE_HANDLER) {
         status = STATUS_UNSUCCESSFUL;
         goto end;
     }
-    /*
-        do {
-//            //
-//            // Access to ensure physical memory is allocated to back the page.
-//            // (TODO: Is this necessary given that we're doing a Probe+Lock below?)
-//            //
-//
-//#pragma warning (suppress:4189)
-//            volatile ULONG whocares = *(ULONG*)address;
-            
 
-            __wbinvd();
+    end = address + (pageCount * PAGE_SIZE) - 1;
 
-            pte = _getPteVaForUserModeVa(address, storage);
+    //
+    // Write a magic value to the page prior to enabling SME on the page 
+    // to enable testing of functioning encryption.
+    //
 
-            //
-            // Locate the PTE.
-            // Note: We read from physical memory, but it'd probably be 
-            //       cleaner just to locate the virtual addresses for the 
-            //       below and act upon them (which is exactly what we do for 
-            //       the PTE itself).
-            //       I'm interleaving both methods here for prosperity.
-            //
+    *(ULONG*)address = 0xf00d3333;
+    
+    do {
+        __wbinvd();
 
-            pml4Idx = (address >> 39i64) & 0x1ff;
-            pdptIdx = (address >> 30i64) & 0x1ff;
-            pdtIdx = (address >> 21i64) & 0x1ff;
-            ptIdx = (address >> 12i64) & 0x1ff;
+        pte = _getPteVaForUserModeVa((PVOID)address, nonPagedBuffer);
 
-            SmeContext.Debug[0] = address;
-            SmeContext.Debug[1] = pml4Idx;
-            SmeContext.Debug[2] = pdptIdx;
-            SmeContext.Debug[3] = pdtIdx;
-            SmeContext.Debug[4] = ptIdx;
+        //
+        // Set C-bit in PTE to enable encryption on the page.
+        //
 
-#define ENTRY_SIZE 8
-#define ENTRY_ADDRESS(b, i) (PVOID)(b + (i * ENTRY_SIZE))
-#define READ_ENTRY(b,i) _readPhysicalMemory(ENTRY_ADDRESS(b, i), ENTRY_SIZE, nonPagedBuffer)
-#define TABLE_BASE_ADDRESS_BITS 0xffffffffff000
+       // *(ULONG_PTR*)pte |= 1i64 << capabilities.PageTableCbitIdx;
+        SmeContext.Debug[13] = *(ULONG_PTR*)pte;
+        SmeContext.Debug[14] = *(ULONG_PTR*)pte | 1i64 << capabilities.PageTableCbitIdx;
 
-            pml4 = __readcr3() & TABLE_BASE_ADDRESS_BITS;
-            SmeContext.Debug[5] = pml4;
+        _ReadWriteBarrier();
+        __wbinvd();
 
-            READ_ENTRY(pml4, pml4Idx);
-            pdpt = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
-            SmeContext.Debug[6] = pdpt;
+        //// TODO: wait for external cache invalidation??
 
-            READ_ENTRY(pdpt, pdptIdx);
-            pdt = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
-            SmeContext.Debug[7] = pdt;
-
-            READ_ENTRY(pdt, pdtIdx);
-            pt = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
-            SmeContext.Debug[8] = pt;
-
-            READ_ENTRY(pt, ptIdx);
-            pte = *nonPagedBuffer & TABLE_BASE_ADDRESS_BITS;
-            SmeContext.Debug[9] = pte;
-
-            SmeContext.Debug[10] = pt + (ptIdx * 8);
-            pa.QuadPart = pt + (ptIdx*8);
-            pte = (ULONG_PTR)MmGetVirtualForPhysical(pa);
-            SmeContext.Debug[11] = pte;
-            SmeContext.Debug[12] = *(ULONG_PTR*)pte;
-
-            //
-            // Set C-bit in PTE to enable encryption on the page.
-            //
-
-            *(ULONG_PTR*)pte |= 1i64 << capabilities.PageTableCbitIdx;
-            SmeContext.Debug[13] = *(ULONG_PTR*)pte;
-
-            _ReadWriteBarrier();
-            __wbinvd();
-            __invlpg(address);
-
-            // TODO: wait for external cache invalidation??
-
-            address += PAGE_SIZE;
-        } while (address < end);
-        */
+        address += PAGE_SIZE;
+    } while (address < end);
+        
     //TODO: save MDL
     mdl = NULL;
+
+    releaseNeeded = FALSE;
+
+    AllocateResponse->Address = (PVOID)address;
+
+    status = STATUS_SUCCESS;
+
+end:
+    if (releaseNeeded) {
+        ExFreePool(userModeBuffer);
+        userModeBuffer = NULL;
+    }
+
+    if (NULL != mdl) {
+        //IoFreeMdl(mdl);
+        mdl = NULL;
+    }
+
+    if (NULL != nonPagedBuffer) {
+        ExFreePool(nonPagedBuffer);
+        nonPagedBuffer = NULL;
+    }
+
+    return status;
+}
+
+NTSTATUS
+SmepFree (
+    _In_ PSME_FREE_REQUEST FreeRequest
+    )
+{
+    NTSTATUS status;
+    ULONG_PTR end;
+    ULONG_PTR address;
+    PVOID pte;
+    PMDL mdl = NULL;
+    PULONG_PTR nonPagedBuffer = NULL;
+    SME_GET_CAPABILITIES_RESPONSE capabilities = { 0 };
+
+    //
+    // This function is called during a fast io dispatch so we should 
+    // already be running in the context of the caller process.
+    //
+
+    PAGED_CODE();
+
+    mdl = SmeContext.DebugMdl; // Todo: find mdl 
+
+    address = (ULONG_PTR)FreeRequest->Address;
+    end = address + mdl->Size - 1;
+
+    //
+    // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
+    //
+
+    nonPagedBuffer = ExAllocatePool(NonPagedPool, sizeof(ULONG_PTR));
+    if (NULL == nonPagedBuffer) {
+        //
+        // If this fails on this path, we're in a spot of trouble (TODO).
+        //
+
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto end;
+    }
+
+    do {
+        __wbinvd();
+
+        pte = _getPteVaForUserModeVa((PVOID)address, nonPagedBuffer);
+
+        //
+        // Clear C-bit in PTE to disable encryption on the page.
+        //
+
+        *(ULONG_PTR*)pte &= ~(1i64 << capabilities.PageTableCbitIdx);
+        SmeContext.Debug[15] = *(ULONG_PTR*)pte;
+        SmeContext.Debug[16] = *(ULONG_PTR*)pte | 1i64 << capabilities.PageTableCbitIdx;
+
+        _ReadWriteBarrier();
+        __wbinvd();
+
+        address += PAGE_SIZE;
+    } while (address < end);
 
     status = STATUS_SUCCESS;
 
 end:
     if (NULL != mdl) {
-        //IoFreeMdl(mdl);
+        MmUnmapLockedPages(FreeRequest->Address, mdl);
+        MmUnlockPages(mdl);
+        IoFreeMdl(mdl);
         mdl = NULL;
     }
 
@@ -490,8 +568,6 @@ NTSTATUS MmCopyMemory(
     PSIZE_T         NumberOfBytesTransferred
 );
 
-#include <ntddk.h>
-
 FORCEINLINE
 VOID
 _readPhysicalMemory (
@@ -511,7 +587,7 @@ _readPhysicalMemory (
     MmCopyMemory(BufferNonPaged, 
                  address, 
                  Size, 
-        1 /*MM_COPY_MEMORY_PHYSICAL*/,
+                 1 /*MM_COPY_MEMORY_PHYSICAL*/,
                  &Size);
 }
 

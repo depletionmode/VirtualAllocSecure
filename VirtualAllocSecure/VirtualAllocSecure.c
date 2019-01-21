@@ -10,8 +10,14 @@ __declspec(dllexport)
 PVOID
 VirtualAllocSecure (
     _In_ SIZE_T Size,
-    _In_ ULONG Protect
+    _In_ ULONG Protect /* ignored for now */
     );
+
+__declspec(dllexport)
+VOID
+VirtualFreeSecure(
+    _In_ PVOID Address
+);
 
 BOOLEAN _testSystemSmeCapable();
 
@@ -29,7 +35,10 @@ VirtualAllocSecure (
     HANDLE hDevice = INVALID_HANDLE_VALUE;
     BOOLEAN releaseNeeded = FALSE;
 
-    SME_SET_CBIT_REQUEST request = { 0 };
+    UNREFERENCED_PARAMETER(Protect); // TODO
+
+    SME_ALLOCATE_REQUEST request = { 0 };
+    SME_ALLOCATE_RESPONSE response = { 0 };
 
     //
     // Check if system is Secure Memory Encryption capable.
@@ -42,28 +51,7 @@ VirtualAllocSecure (
     }
     
     //
-    // Request virtual memory allocation. Memory is reserved + committed.
-    //
-
-    address = VirtualAlloc(NULL, 
-                           Size, 
-                           MEM_COMMIT | MEM_RESERVE,
-                           Protect);
-    if (NULL == address) {
-        goto end;
-    }
-
-    releaseNeeded = TRUE;
-    printf("address=0x%p\n", address);
-    //
-    // Write a magic value to the page prior to enabling SME on the page 
-    // to enable testing of functioning encryption.
-    //
-
-    *(ULONG*)address = 0xf00d3333;
-    
-    //
-    // Call driver to set C-bit on each page in the allocated region.
+    // Call driver to allocate secure memory region.
     //
 
     hDevice = CreateFile((LPCSTR)DEVICE_NAME,
@@ -77,11 +65,85 @@ VirtualAllocSecure (
         goto end;
     }
 
-    request.Address = address;
     request.Size = Size;
 
     result = DeviceIoControl(hDevice,
-                             SME_IOCTL_SET_CBIT,
+                             SME_IOCTL_ALLOCATE,
+                             &request,
+                             sizeof(request),
+                             &response,
+                             sizeof(response),
+                             NULL,
+                             NULL);
+    if (!result) {
+        goto end;
+    } else if (NULL == response.Address) {
+        SetLastError(ERROR_MEMORY_HARDWARE);
+
+        goto end;
+    }
+    releaseNeeded = TRUE;
+
+    FlushInstructionCache(GetCurrentProcess(), response.Address, Size);
+
+    //
+    // Test magic value. If encryption is now enabled, it should not match the 
+    // value previously written (as this value is now 'decrypted').
+    //
+    
+    if (*(ULONG*)response.Address == 0xf00d3333) {
+        SetLastError(ERROR_ENCRYPTION_FAILED);
+
+        goto end;
+    }
+
+    //ZeroMemory(address, Size);
+
+    releaseNeeded = FALSE;
+
+    address = response.Address;
+
+end:
+    if (releaseNeeded) {
+        //VirtualFreeSecure(response.Address);
+    }
+
+    if (INVALID_HANDLE_VALUE != hDevice) {
+        CloseHandle(hDevice);
+    }
+
+    return address;
+}
+
+VOID
+VirtualFreeSecure(
+    _In_ PVOID Address
+    )
+{
+    BOOLEAN result;
+    HANDLE hDevice = INVALID_HANDLE_VALUE;
+
+    SME_FREE_REQUEST request = { 0 };
+    
+    //
+    // Call driver to free secure memory region.
+    //
+
+    hDevice = CreateFile((LPCSTR)DEVICE_NAME,
+                         GENERIC_WRITE, 
+                         0, 
+                         NULL, 
+                         OPEN_EXISTING, 
+                         0, 
+                         NULL);
+    if (INVALID_HANDLE_VALUE == hDevice) {
+        goto end;
+    }
+
+    request.Address = Address;
+
+    result = DeviceIoControl(hDevice,
+                             SME_IOCTL_ALLOCATE,
                              &request,
                              sizeof(request),
                              NULL,
@@ -92,34 +154,10 @@ VirtualAllocSecure (
         goto end;
     }
 
-    FlushInstructionCache(GetCurrentProcess(), address, Size);
-
-    //
-    // Test magic value. If encryption is now enabled, it should not match the 
-    // value previously written (as this value is now 'decrypted').
-    //
-    
-    if (*(ULONG*)address == 0xf00d3333) {
-        SetLastError(ERROR_ENCRYPTION_FAILED);
-
-        goto end;
-    }
-
-    //ZeroMemory(address, Size);
-
-    releaseNeeded = FALSE;
-
 end:
     if (INVALID_HANDLE_VALUE != hDevice) {
         CloseHandle(hDevice);
     }
-
-    if (releaseNeeded) {
-        //VirtualFree(address, 0, MEM_RELEASE);
-        address = NULL;
-    }
-
-    return address;
 }
 
 BOOLEAN _testSystemSmeCapable()

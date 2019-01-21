@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 typedef PVOID(*VirtualAllocSecure)(SIZE_T, ULONG);
+typedef PVOID(*VirtualFreeSecure)(PVOID);
 
 char vanity[] =
 "       _      _               _   _   _ _            __                           \n"
@@ -28,6 +29,7 @@ int main(int ac, char *av[])
     printf("[+] VirtualAllocSecure library loaded successfully @ 0x%p.\n", lib);
 
     VirtualAllocSecure pVirtualAllocSecure = (VirtualAllocSecure)GetProcAddress(lib, "VirtualAllocSecure");
+    VirtualFreeSecure pVirtualFreeSecure = (VirtualFreeSecure)GetProcAddress(lib, "VirtualFreeSecure");
 
 #define BUFFER_SIZE 0x100
     printf("[-] Attempting to allocate encrypted memory...\n");
@@ -46,7 +48,7 @@ int main(int ac, char *av[])
     strcpy_s(buffer, BUFFER_SIZE, "ArthurMorgan");
     printf("[+] ...read \"%s\" from memory region!\n", buffer);
 
-    VirtualFree(buffer, 0, MEM_RELEASE);
+    pVirtualFreeSecure(buffer);
     printf("[-] Memory released.\n");
 
     return 0;
