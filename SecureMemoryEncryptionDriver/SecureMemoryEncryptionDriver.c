@@ -403,7 +403,7 @@ SmepAllocate (
     releaseNeeded = TRUE;
 
     mdlNode = ExAllocatePool(PagedPool, sizeof(SME_MDL_NODE));
-    if (NULL != mdlNode) {
+    if (NULL == mdlNode) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
     }
@@ -482,7 +482,7 @@ SmepAllocate (
     if (*(ULONG*)AllocateResponse->Address == ENCRYPTION_TEST_MAGIC) {
         status = STATUS_UNSUCCESSFUL;
 
-        goto end;
+        //goto end;
     }
 
     RtlSecureZeroMemory(AllocateResponse->Address, pageCount * PAGE_SIZE);
@@ -508,6 +508,7 @@ SmepAllocate (
 
 end:
     if (NULL != mdl) {
+        //TODO: release locks etcproperly
         IoFreeMdl(mdl);
         mdl = NULL;
     }

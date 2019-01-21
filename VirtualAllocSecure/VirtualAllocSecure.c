@@ -32,8 +32,7 @@ VirtualAllocSecure (
     PVOID address = NULL;
     BOOLEAN result;
     HANDLE hDevice = INVALID_HANDLE_VALUE;
-    BOOLEAN releaseNeeded = FALSE;
-    DWORD error = 0;
+    DWORD error;
 
     UNREFERENCED_PARAMETER(Protect); // TODO
 
@@ -76,23 +75,20 @@ VirtualAllocSecure (
                              NULL,
                              NULL);
     if (!result) {
+        error = GetLastError();
+
         goto end;
     } else if (NULL == response.Address) {
         error = ERROR_MEMORY_HARDWARE;
 
         goto end;
     }
-    releaseNeeded = TRUE;
-
-    releaseNeeded = FALSE;
 
     address = response.Address;
 
-end:
-    if (releaseNeeded) {
-        VirtualFreeSecure(response.Address);
-    }
+    error = ERROR_SUCCESS;
 
+end:
     if (INVALID_HANDLE_VALUE != hDevice) {
         CloseHandle(hDevice);
     }
