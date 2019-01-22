@@ -159,10 +159,8 @@ DriverEntry (
 
 #define CR4_LA57_MASK (1 << 12)
     if (0 != (__readcr4() & CR4_LA57_MASK)) {
-
         status = STATUS_UNSUCCESSFUL;
         goto end;
-
     }
 
     //
@@ -173,10 +171,8 @@ DriverEntry (
                                                       sizeof(ULONG_PTR),
                                                       POOL_TAG(B));
     if (NULL == SmeContext.NonPagedBuffer) {
-
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
-
     }
 
     //
@@ -202,18 +198,14 @@ SmeDriverUnload (
     PAGED_CODE();
 
     if (NULL != SmeContext.NonPagedBuffer) {
-
         ExFreePoolWithTag(SmeContext.NonPagedBuffer, POOL_TAG(B));
         SmeContext.NonPagedBuffer = NULL;
-
     }
 
     if (NULL != SmeContext.DeviceObject) {
-
         IoDeleteSymbolicLink((PUNICODE_STRING)&SmepWin32DeviceName);
         IoDeleteDevice(SmeContext.DeviceObject);
         SmeContext.DeviceObject = NULL;
-
     }
 }
 
@@ -259,7 +251,6 @@ SmeDispatchFastIoDeviceControl (
     PAGED_CODE();
 
     switch (IoControlCode) {
-
     case SME_IOCTL_GET_CAPABILITIES:
 
         if (OutputBufferLength < sizeof(SME_GET_CAPABILITIES_RESPONSE)) {
@@ -268,23 +259,18 @@ SmeDispatchFastIoDeviceControl (
         }
 
         __try {
-
             ProbeForWrite(OutputBuffer, 
                           sizeof(SME_GET_CAPABILITIES_RESPONSE), 
                           1);
 
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-
             status = GetExceptionCode();
             goto end;
-
         }
 
         status = SmepGetCapabilities(OutputBuffer);
         if (NT_SUCCESS(status)) {
-
             responseLength = sizeof(SME_GET_CAPABILITIES_RESPONSE);
-
         }
 
         break;
@@ -300,7 +286,6 @@ SmeDispatchFastIoDeviceControl (
         }
 
         __try {
-
             ProbeForRead(InputBuffer, 
                          InputBufferLength, 
                          1);
@@ -310,37 +295,30 @@ SmeDispatchFastIoDeviceControl (
                           1);
 
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-
             status = GetExceptionCode();
             goto end;
-
         }
 
         status = SmepAllocate(InputBuffer, OutputBuffer);
         if (NT_SUCCESS(status)) {
-
             responseLength = sizeof(SME_ALLOCATE_RESPONSE);
-
         }
 
         break;
+
     case SME_IOCTL_FREE:
 
         if (InputBufferLength < sizeof(SME_FREE_REQUEST)) {
-
             status = STATUS_INVALID_PARAMETER;
             goto end;
-
         }
 
         __try {
-
             ProbeForRead(InputBuffer,
                 InputBufferLength,
                 1);
 
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-
             status = GetExceptionCode();
             goto end;
 
@@ -378,7 +356,6 @@ SmepGetCapabilities (
     PAGED_CODE();
 
     __try {
-
         //
         // AMD64 Architecture Programmer's Manual Volume 2: System Programming
         // https://www.amd.com/system/files/TechDocs/24593.pdf
@@ -394,10 +371,8 @@ SmepGetCapabilities (
         CapabilitiesResponse->MemoryEncryptionModeEnabled = (__readmsr(SYSCFG_MSR) >> 23) & 1;
 
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-
         status = GetExceptionCode();
         goto end;
-
     }
 
     status = STATUS_SUCCESS;
@@ -446,20 +421,16 @@ SmepAllocate (
     kernelModeBuffer = ExAllocatePoolWithTag(NonPagedPoolNx, 
                                              pageCount * PAGE_SIZE, POOL_TAG(K));
     if (NULL == kernelModeBuffer) {
-
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
-
     }
     releaseNeeded = TRUE;
 
     mdlNode = ExAllocatePoolWithTag(PagedPool, 
                                     sizeof(SME_MDL_NODE), POOL_TAG(M));
     if (NULL == mdlNode) {
-
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
-
     }
     RtlZeroMemory(mdlNode, sizeof(SME_MDL_NODE));
 
@@ -469,14 +440,11 @@ SmepAllocate (
                                  FALSE, 
                                  NULL);
     if (NULL == mdlNode->Mdl) {
-
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto end;
-
     }
 
     __try {
-
         MmProbeAndLockPages(mdlNode->Mdl, KernelMode, IoModifyAccess);
         mdlNode->Locked = TRUE;
 
@@ -494,10 +462,8 @@ SmepAllocate (
                                                           NormalPagePriority);
 
     }__except (EXCEPTION_EXECUTE_HANDLER) {
-
         status = STATUS_UNSUCCESSFUL;
         goto end;
-
     }
 
     end = address + (pageCount * PAGE_SIZE) - 1;
@@ -512,7 +478,6 @@ SmepAllocate (
     AllocateResponse->Address = (PVOID)address;
 
     do {
-
         pte = _getPteVaForUserModeVa((PVOID)address, 
                                      SmeContext.NonPagedBuffer);
 
@@ -538,10 +503,8 @@ SmepAllocate (
     //
 
     if (*(ULONG*)AllocateResponse->Address == ENCRYPTION_TEST_MAGIC) {
-
         status = STATUS_UNSUCCESSFUL;
         goto end;
-
     }
 
     RtlSecureZeroMemory(AllocateResponse->Address, pageCount * PAGE_SIZE);
@@ -565,36 +528,26 @@ SmepAllocate (
 
 end:
     if (NULL != mdlNode) {
-
         if (NULL != mdlNode->Mdl) {
-
             if (NULL != mdlNode->Address) {
-
                 MmUnmapLockedPages(mdlNode->Address, mdlNode->Mdl);
-
             }
 
             if (mdlNode->Locked) {
-
                 MmUnlockPages(mdlNode->Mdl);
-
             }
 
             IoFreeMdl(mdlNode->Mdl);
-
         }
 
         ExFreePoolWithTag(mdlNode, POOL_TAG(M));
         mdlNode = NULL;
-
     }
 
     if (releaseNeeded) {
-
         ExFreePoolWithTag(kernelModeBuffer, POOL_TAG(K));
         kernelModeBuffer = NULL;
         AllocateResponse->Address = NULL;
-
     }
 
     return status;
@@ -623,7 +576,6 @@ SmepFree (
 
     entry = SmeContext.MdlList.Flink;
     while (entry != &SmeContext.MdlList) {
-
         //
         // Locate MDL describing this address.
         //
@@ -633,24 +585,20 @@ SmepFree (
         if (mdlNode->Address == FreeRequest->Address) {
             mdl = mdlNode->Mdl;
             RemoveEntryList(&mdlNode->ListEntry);
-
             ExFreePoolWithTag(mdlNode, POOL_TAG(M));
             break;
         }
 
         entry = entry->Flink;
-
     }
 
     if (NULL == mdl) {
-
         //
         // Not previously allocated by us.
         //
 
         status = STATUS_NOT_FOUND;
         goto end;
-
     }
 
     kernelModeAddress = mdl->StartVa;
@@ -659,7 +607,6 @@ SmepFree (
     end = address + mdl->Size - 1;
 
     do {
-
         pte = _getPteVaForUserModeVa((PVOID)address, 
                                      SmeContext.NonPagedBuffer);
 
