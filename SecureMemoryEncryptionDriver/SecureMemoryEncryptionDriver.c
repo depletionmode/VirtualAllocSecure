@@ -279,10 +279,8 @@ SmeDispatchFastIoDeviceControl (
 
         if (InputBufferLength < sizeof(SME_ALLOCATE_REQUEST) ||
             OutputBufferLength < sizeof(SME_ALLOCATE_RESPONSE)) {
-
             status = STATUS_INVALID_PARAMETER;
             goto end;
-
         }
 
         __try {
@@ -321,7 +319,6 @@ SmeDispatchFastIoDeviceControl (
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             status = GetExceptionCode();
             goto end;
-
         }
 
         status = SmepFree(InputBuffer);
