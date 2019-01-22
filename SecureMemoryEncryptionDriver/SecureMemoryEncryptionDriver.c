@@ -89,6 +89,8 @@ typedef struct _SME_CONTEXT {
 
     LIST_ENTRY MdlList;
 
+    PULONG_PTR NonPagedBuffer;
+
 } SME_CONTEXT, *PSME_CONTEXT;
 
 typedef struct _SME_MDL_NODE {
@@ -162,6 +164,18 @@ DriverEntry (
     }
 
     //
+    // Allocate NonPagedPoolNx storage for _getPteVaForUserModeVa.
+    //
+
+    SmeContext.NonPagedBuffer = ExAllocatePoolWithTag(NonPagedPoolNx,
+                                                      sizeof(ULONG_PTR),
+                                                      POOL_TAG(B));
+    if (NULL == SmeContext.NonPagedBuffer) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto end;
+    }
+
+    //
     // Populate SmeContext.Capabilities.
     //
 
@@ -182,6 +196,11 @@ SmeDriverUnload (
     UNREFERENCED_PARAMETER(DriverObject);
 
     PAGED_CODE();
+
+    if (NULL != SmeContext.NonPagedBuffer) {
+        ExFreePoolWithTag(SmeContext.NonPagedBuffer, POOL_TAG(B));
+        SmeContext.NonPagedBuffer = NULL;
+    }
 
     if (NULL != SmeContext.DeviceObject) {
         IoDeleteSymbolicLink((PUNICODE_STRING)&SmepWin32DeviceName);
@@ -367,7 +386,6 @@ SmepAllocate (
     ULONG_PTR address;
     ULONG pageCount;
     PVOID pte;
-    PULONG_PTR nonPagedBuffer = NULL;
     PVOID kernelModeBuffer = NULL;
     BOOLEAN releaseNeeded = FALSE;
     PSME_MDL_NODE mdlNode = NULL;
@@ -378,18 +396,6 @@ SmepAllocate (
     //
 
     PAGED_CODE();
-
-    //
-    // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
-    //
-
-    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPoolNx, 
-                                           sizeof(ULONG_PTR), 
-                                           POOL_TAG(1));
-    if (NULL == nonPagedBuffer) {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto end;
-    }
 
     //
     // Unfortunately as Mm does not (yet) support SME, the C-bit could 
@@ -465,7 +471,8 @@ SmepAllocate (
     AllocateResponse->Address = (PVOID)address;
 
     do {
-        pte = _getPteVaForUserModeVa((PVOID)address, nonPagedBuffer);
+        pte = _getPteVaForUserModeVa((PVOID)address, 
+                                     SmeContext.NonPagedBuffer);
 
         //
         // Set C-bit in PTE to enable encryption on the page.
@@ -478,6 +485,7 @@ SmepAllocate (
         __invlpg(address);
 
         address += PAGE_SIZE;
+
     } while (address < end);
 
     __wbinvd();
@@ -534,11 +542,6 @@ end:
         AllocateResponse->Address = NULL;
     }
 
-    if (NULL != nonPagedBuffer) {
-        ExFreePoolWithTag(nonPagedBuffer, POOL_TAG(1));
-        nonPagedBuffer = NULL;
-    }
-
     return status;
 }
 
@@ -552,7 +555,6 @@ SmepFree (
     ULONG_PTR address;
     PVOID pte;
     PMDL mdl = NULL;
-    PULONG_PTR nonPagedBuffer = NULL;
     PVOID kernelModeAddress;
     PLIST_ENTRY entry;
     PSME_MDL_NODE mdlNode;
@@ -598,25 +600,9 @@ SmepFree (
     address = (ULONG_PTR)FreeRequest->Address;
     end = address + mdl->Size - 1;
 
-    //
-    // Allocate NonPagedPool storage for _getPteVaForUserModeVa.
-    //
-    
-    nonPagedBuffer = ExAllocatePoolWithTag(NonPagedPoolNx, 
-                                           sizeof(ULONG_PTR), 
-                                           POOL_TAG(1));
-    if (NULL == nonPagedBuffer) {
-        //
-        // If this fails on this path, we're in a spot of trouble (TODO).
-        //
-
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto end;
-    }
-
     do {
-
-        pte = _getPteVaForUserModeVa((PVOID)address, nonPagedBuffer);
+        pte = _getPteVaForUserModeVa((PVOID)address, 
+                                     SmeContext.NonPagedBuffer);
 
         //
         // Clear C-bit in PTE to disable encryption on the page.
@@ -629,6 +615,7 @@ SmepFree (
         __invlpg(address);
 
         address += PAGE_SIZE;
+
     } while (address < end);
 
     __wbinvd();
@@ -642,11 +629,6 @@ SmepFree (
     status = STATUS_SUCCESS;
 
 end:
-    if (NULL != nonPagedBuffer) {
-        ExFreePoolWithTag(nonPagedBuffer, POOL_TAG(1));
-        nonPagedBuffer = NULL;
-    }
-
     return status;
 }
 
