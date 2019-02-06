@@ -409,7 +409,7 @@ SmepAllocate (
     // we allocate off the NonPagedPool and then Probe+Lock the physical pages 
     // for good measure.
     // Truthfully, any kernel operation that attempts to look up the Pfn in 
-    // the database will likely fail as the index will be off.
+    // the database will likely fail catastrophically as the index will be off.
     //
 
     pageCount = (ULONG)((AllocateRequest->Size / PAGE_SIZE) +
